@@ -1,10 +1,37 @@
 {
   "name": "mdmd",
+  "description": "Markdown metadata manager",
+  "version": "0.0.0",
+  "author": "Giuseppe Rota",
+  "bugs": "https://github.com/grota/mdmd/issues",
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "repository": "grota/mdmd",
+  "files": [
+    "./bin",
+    "./dist",
+    "./oclif.manifest.json"
+  ],
+  "homepage": "https://github.com/grota/mdmd",
+  "keywords": [
+    "oclif"
+  ],
+  "license": "MIT",
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@eslint/compat": "^1.4.1",
+    "@oclif/prettier-config": "^0.2.1",
+    "@oclif/test": "^4.1.16",
+    "@types/chai": "^4.3.20",
+    "@types/mocha": "^10.0.10",
+    "chai": "^4.5.0",
+    "eslint": "^9.39.3",
+    "eslint-config-oclif": "^6.0.144",
+    "eslint-config-prettier": "^10.1.8",
+    "mocha": "^10.8.2",
+    "oclif": "^4.22.81",
+    "shx": "^0.3.4"
   },
   "peerDependencies": {
     "typescript": "^5.9.3"
@@ -12,11 +39,29 @@
   "bin": {
     "mdmd": "./bin/run.js"
   },
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "shx rm -rf dist && tsc -b",
+    "lint": "eslint",
+    "postpack": "shx rm -f oclif.manifest.json",
+    "posttest": "npm run lint",
+    "prepack": "oclif manifest && oclif readme",
+    "test": "mocha --forbid-only \"test/**/*.test.ts\"",
+    "version": "oclif readme && git add README.md"
+  },
   "oclif": {
     "bin": "mdmd",
     "commands": "./dist/commands",
     "dirname": "mdmd",
-    "topicSeparator": " "
+    "plugins": [
+      "@oclif/plugin-autocomplete",
+      "@oclif/plugin-commands",
+      "@oclif/plugin-help",
+      "@oclif/plugin-not-found"
+    ],
+    "topicSeparator": " ",
+    "description": "Markdown metadata manager",
+    "additionalHelpFlags": ["-h"]
   },
   "dependencies": {
     "@oclif/core": "^4.8.1",
