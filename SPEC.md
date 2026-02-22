@@ -17,10 +17,11 @@ The collection is the canonical storage location for all markdown files.
 This is typically an Obsidian vault, but can be any directory containing
 markdown files with YAML frontmatter.
 
-Prototype default is currently hardcoded to:
-`/home/grota/Documents/Main Obsidian Vault`.
-First implementation milestone should make this configurable (CLI flag, env var,
-or config file), with the hardcoded path retained only as a temporary fallback.
+Collection resolution priority:
+1. CLI `--collection`
+2. `MDMD_COLLECTION_PATH` environment variable
+3. mdmd config (`$XDG_CONFIG_HOME/mdmd/config.yaml`, fallback `~/.config/mdmd/config.yaml`)
+4. Active Obsidian vault from `$XDG_CONFIG_HOME/obsidian/obsidian.json` (fallback `~/.config/obsidian/obsidian.json`)
 
 ### Frontmatter Properties
 
@@ -102,7 +103,8 @@ It is not exposed as a standalone CLI command.
 
 Scans the entire collection and builds/updates an index of note metadata.
 
-**Index storage:** SQLite database at `~/.cache/mdmd/index.db`.
+**Index storage:** SQLite database at `$XDG_DATA_HOME/mdmd/index.db`
+(fallback `~/.local/share/mdmd/index.db`).
 
 **Schema:**
 
@@ -294,9 +296,84 @@ mdmd remove -i mdmd_notes/architecture-notes.md
 # ✓ Deleted: /collection/mdmd_notes/architecture-notes.md
 ```
 
+### `mdmd doctor`
+
+Runs health checks for index, symlink state, and configuration.
+
+By default, `doctor` is **read-only** and reports problems without changing files.
+
+**Flags:**
+- `--scope <scope>`: `index`, `symlinks`, `config`, or `all` (default: `all`)
+- `--fix`: Apply safe deterministic fixes
+- `--json`: Emit machine-readable JSON report
+- `-c, --collection <dir>`: Override collection root (same priority semantics as other commands)
+
+**Checks:**
+- **Index scope**
+  - Stale index rows whose `path_in_collection` no longer exists in collection
+  - Missing index rows for markdown files present in collection
+  - Duplicate `mdmd_id` values (if present)
+  - Invalid managed metadata in frontmatter (`mdmd_id`, `path`, `created_at`, `last_updated_at`)
+- **Symlinks scope**
+  - Missing expected symlinks in `<cwd>/mdmd_notes/`
+  - Orphan symlinks not represented by current managed-note selection
+  - Broken symlinks and stale/wrong symlink targets
+  - Non-symlink filesystem entries inside `<cwd>/mdmd_notes/`
+- **Config scope**
+  - Collection root existence/accessibility
+  - Presence of `mdmd_notes/` in `.git/info/exclude` when cwd is a git repo
+
+**Fix behavior (`--fix`):**
+- Allowed automatic fixes:
+  1. Run internal `refresh_index`
+  2. Reconcile symlinks using `sync` semantics
+  3. Ensure `mdmd_notes/` entry exists in `.git/info/exclude`
+- `doctor --fix` never deletes collection notes automatically.
+
+**Output contract:**
+- Human output: summary + issue lines
+- JSON output includes:
+  - `healthy: boolean`
+  - `issues: [{severity, scope, code, path?, message}]`
+  - `fixesApplied: string[]`
+- Exit codes:
+  - `0`: no issues
+  - `1`: issues found (after fixes, if `--fix` is used)
+  - `2`: runtime error executing doctor
+
+### `mdmd config`
+
+Manages mdmd configuration values.
+
+**Storage format:** YAML (comment-friendly) at
+`$XDG_CONFIG_HOME/mdmd/config.yaml` (fallback `~/.config/mdmd/config.yaml`).
+
+**Subcommands:**
+- `mdmd config list [--resolved] [--json]`
+- `mdmd config get collection [--resolved] [--json]`
+- `mdmd config set collection <path>`
+- `mdmd config unset collection`
+
+**Behavior:**
+- `set` writes `collection` in mdmd YAML config.
+- `unset` removes `collection` (and legacy `collectionPath` if present).
+- `--resolved` returns effective value after full resolution chain (including
+  Obsidian fallback).
+- `--json` returns machine-readable output suitable for scripts.
+
+## Implementation Order
+
+Implement commands in this order to minimize cross-command rework:
+1. `ingest`
+2. internal `refresh_index`
+3. `sync`
+4. `remove`
+5. `doctor`
+6. `config`
+
 ## Future Considerations
 
-- Configurable collection path (CLI flag, env var, or config file).
+- Additional config keys beyond collection path (symlink dir, doctor defaults, output format).
 - Configurable target directory (instead of always using cwd).
 - Configurable symlink directory name (default: `mdmd_notes/`).
 - Additional CRUD operations on notes (create new note, read/query, update frontmatter).
@@ -322,8 +399,8 @@ None at this time.
   queries more efficient.
 - **Path representation**: absolute paths. Known limitation: associations break
   if the project directory is moved/renamed.
-- **Collection path configuration priority**: CLI flag > env var > config file >
-  default fallback.
+- **Collection path configuration priority**: CLI flag > env var > mdmd config >
+  Obsidian active-vault fallback.
 - **Frontmatter on ingest**: if the file has no frontmatter, create it from
   scratch with all required mdmd properties.
 - **Index scope**: all collection markdown files are indexed, not just managed ones.
@@ -337,6 +414,10 @@ None at this time.
 - **Index format**: SQLite. Frontmatter stored as JSON column, queried via
   SQLite's native `json_extract()` and `json_each()`. No denormalized tables
   upfront; indexed generated columns can be added later if needed.
+- **Config format**: YAML for comment support.
+- **XDG compliance**:
+  - mdmd config uses `$XDG_CONFIG_HOME/mdmd/config.yaml` fallback `~/.config/mdmd/config.yaml`
+  - index db uses `$XDG_DATA_HOME/mdmd/index.db` fallback `~/.local/share/mdmd/index.db`
 - **refresh_index operation**: Internal operation, not exposed as CLI command.
   Automatically called by other commands as needed.
 - **Removal behavior**: No confirmation by default. Interactive mode via `-i` flag.
