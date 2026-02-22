@@ -17,8 +17,10 @@ The collection is the canonical storage location for all markdown files.
 This is typically an Obsidian vault, but can be any directory containing
 markdown files with YAML frontmatter.
 
-Currently hardcoded to: `/home/grota/Documents/Main Obsidian Vault`
-(to be made configurable later).
+Prototype default is currently hardcoded to:
+`/home/grota/Documents/Main Obsidian Vault`.
+First implementation milestone should make this configurable (CLI flag, env var,
+or config file), with the hardcoded path retained only as a temporary fallback.
 
 ### Frontmatter Properties
 
@@ -53,6 +55,10 @@ Rules:
 Notes are symlinked into `mdmd_notes/` relative to the working directory.
 This directory name is configurable (default: `mdmd_notes/`).
 
+To avoid ambiguity, this spec distinguishes:
+- **Collection notes directory**: `<collection_root>/mdmd_notes/` (physical files)
+- **Working symlink directory**: `<cwd>/mdmd_notes/` (symlinks)
+
 Symlinks are named after the collection file's basename. In case of collisions
 (two notes with the same filename both matching the same path), disambiguate
 by appending the parent folder name, e.g. `note__subfolder.md`.
@@ -72,13 +78,14 @@ Steps:
    - `last_updated_at`: set to current timestamp.
    - `created_at`: set to current timestamp (if not already present).
    - `git_sha`: set to HEAD SHA if cwd is a git repo, omit otherwise.
-3. Move the file into the collection under `mdmd_notes/` subdirectory.
+3. Move the file into the collection notes directory:
+   `<collection_root>/mdmd_notes/`.
    - If a file with the same name already exists in `mdmd_notes/`, append a short
      suffix (e.g., `note_2.md`) to avoid collisions.
 4. Upsert the note into the SQLite index (so it's immediately available to
    `sync` without requiring a full `refresh_index`).
-5. Create `mdmd_notes/` directory in the cwd if it does not exist.
-6. Create a symlink from `mdmd_notes/<filename>` to the collection file.
+5. Create working symlink directory `mdmd_notes/` in the cwd if it does not exist.
+6. Create a symlink from `<cwd>/mdmd_notes/<filename>` to the collection file.
 7. If cwd is a git repo, ensure `mdmd_notes/` is in `.git/info/exclude`.
 
 **Error cases:**
@@ -195,12 +202,13 @@ primary reference. Other markdown editors may use similar conventions.
 
 ### `mdmd sync`
 
-Ensures `mdmd_notes/` in cwd is an exact mirror of all collection notes whose
-`path` property equals the current directory.
+Ensures `mdmd_notes/` in cwd is an exact mirror of all managed collection notes
+whose `path` property equals the current directory.
 
 Steps:
 1. Run `refresh_index` (always, since it's fast with mtime optimization).
-2. Query the index for all notes where `path` equals cwd (exact match).
+2. Query the index for all notes where `mdmd_id` is present and `path` equals cwd
+   (exact match).
 3. Determine desired symlink state: set of `(symlink_name, path_in_collection)` pairs.
 4. Create `mdmd_notes/` directory if it does not exist.
 5. Scan existing `mdmd_notes/` directory.
@@ -314,10 +322,13 @@ None at this time.
   queries more efficient.
 - **Path representation**: absolute paths. Known limitation: associations break
   if the project directory is moved/renamed.
+- **Collection path configuration priority**: CLI flag > env var > config file >
+  default fallback.
 - **Frontmatter on ingest**: if the file has no frontmatter, create it from
   scratch with all required mdmd properties.
 - **Index scope**: all collection markdown files are indexed, not just managed ones.
   This enables future collection-wide search/filtering.
+- **Sync scope**: only managed notes (`mdmd_id` is not NULL) are eligible for sync.
 - **Index table name**: `index_notes` (clarifies it's an index, not the source data).
 - **Primary key**: `path_in_collection` serves as the primary key. When files are
   moved within the collection, the old row is deleted and a new row is inserted.
