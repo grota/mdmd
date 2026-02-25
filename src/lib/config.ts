@@ -14,6 +14,12 @@ export type MdmdConfig = {
   collectionPath?: unknown
 }
 
+export type MdmdRuntime = {
+  configDir: string
+  mdmdConfigPath: string
+  obsidianConfigPath: string
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -27,26 +33,35 @@ export function getXdgConfigHome(): string {
   return path.join(homedir(), '.config')
 }
 
-export function getMdmdConfigPath(): string {
-  const override = process.env[CONFIG_PATH_ENV_VAR]
-  if (override && override.trim().length > 0) {
-    return path.resolve(override)
+function resolveEnvPath(envVarName: string): string | undefined {
+  const value = process.env[envVarName]
+  if (value && value.trim().length > 0) {
+    return path.resolve(value)
   }
 
-  return path.join(getXdgConfigHome(), 'mdmd', 'config.yaml')
+  return undefined
 }
 
-export function getObsidianConfigPath(): string {
-  const override = process.env[OBSIDIAN_CONFIG_PATH_ENV_VAR]
-  if (override && override.trim().length > 0) {
-    return path.resolve(override)
+export function createMdmdRuntime(configDir?: string): MdmdRuntime {
+  const resolvedConfigDir = path.resolve(configDir ?? path.join(getXdgConfigHome(), 'mdmd'))
+  return {
+    configDir: resolvedConfigDir,
+    mdmdConfigPath: resolveEnvPath(CONFIG_PATH_ENV_VAR) ?? path.join(resolvedConfigDir, 'config.yaml'),
+    obsidianConfigPath:
+      resolveEnvPath(OBSIDIAN_CONFIG_PATH_ENV_VAR) ?? path.resolve(resolvedConfigDir, '..', 'obsidian', 'obsidian.json'),
   }
-
-  return path.join(getXdgConfigHome(), 'obsidian', 'obsidian.json')
 }
 
-export async function readMdmdConfig(): Promise<MdmdConfig> {
-  const configPath = getMdmdConfigPath()
+export function getMdmdConfigPath(runtime: MdmdRuntime = createMdmdRuntime()): string {
+  return runtime.mdmdConfigPath
+}
+
+export function getObsidianConfigPath(runtime: MdmdRuntime = createMdmdRuntime()): string {
+  return runtime.obsidianConfigPath
+}
+
+export async function readMdmdConfig(runtime: MdmdRuntime = createMdmdRuntime()): Promise<MdmdConfig> {
+  const configPath = getMdmdConfigPath(runtime)
 
   try {
     const contents = await readFile(configPath, 'utf8')
@@ -70,8 +85,8 @@ export async function readMdmdConfig(): Promise<MdmdConfig> {
   }
 }
 
-export async function writeMdmdConfig(config: MdmdConfig): Promise<void> {
-  const configPath = getMdmdConfigPath()
+export async function writeMdmdConfig(config: MdmdConfig, runtime: MdmdRuntime = createMdmdRuntime()): Promise<void> {
+  const configPath = getMdmdConfigPath(runtime)
   await mkdir(path.dirname(configPath), {recursive: true})
 
   const serialized = stringify(config).trim()
@@ -93,8 +108,11 @@ function pickFirstNonEmpty(...values: Array<string | undefined>): string | undef
   return undefined
 }
 
-export async function resolveCollectionRoot(flagOverride?: string): Promise<string> {
-  const config = await readMdmdConfig()
+export async function resolveCollectionRoot(
+  flagOverride?: string,
+  runtime: MdmdRuntime = createMdmdRuntime(),
+): Promise<string> {
+  const config = await readMdmdConfig(runtime)
   const configPath = resolveCollectionPathFromConfig(config)
   const envPath = process.env[COLLECTION_PATH_ENV_VAR]
 
@@ -103,7 +121,7 @@ export async function resolveCollectionRoot(flagOverride?: string): Promise<stri
     return path.resolve(rawPath)
   }
 
-  const obsidianPath = await resolveObsidianVaultPath()
+  const obsidianPath = await resolveObsidianVaultPath(runtime)
   if (obsidianPath) {
     return path.resolve(obsidianPath)
   }
@@ -125,8 +143,8 @@ function resolveCollectionPathFromConfig(config: MdmdConfig): string | undefined
   return undefined
 }
 
-async function resolveObsidianVaultPath(): Promise<string | undefined> {
-  const obsidianConfigPath = getObsidianConfigPath()
+async function resolveObsidianVaultPath(runtime: MdmdRuntime): Promise<string | undefined> {
+  const obsidianConfigPath = getObsidianConfigPath(runtime)
 
   try {
     const contents = await readFile(obsidianConfigPath, 'utf8')

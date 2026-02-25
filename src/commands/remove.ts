@@ -3,7 +3,7 @@ import {lstat, readFile, readlink, unlink} from 'node:fs/promises'
 import path from 'node:path'
 import {createInterface} from 'node:readline'
 
-import {resolveCollectionRoot} from '../lib/config'
+import {createMdmdRuntime, resolveCollectionRoot} from '../lib/config'
 import {parseFrontmatter} from '../lib/frontmatter'
 import {deleteIndexNoteByPath, openIndexDb, toCollectionRelativePath} from '../lib/index-db'
 import {NOTES_DIR_NAME} from '../lib/sync-state'
@@ -18,8 +18,8 @@ export default class Remove extends Command {
   static override args = {
     symlink: Args.file({
       description: `Symlink path in ${NOTES_DIR_NAME}/ to remove from the collection`,
+      exists: true,
       required: true,
-      exists: true
     }),
   }
   static override description = 'Remove note(s) from the collection by symlink path'
@@ -46,8 +46,9 @@ export default class Remove extends Command {
 
   async run(): Promise<void> {
     const {argv, flags} = await this.parse(Remove)
+    const runtime = createMdmdRuntime(this.config.configDir)
     const cwd = path.resolve(process.cwd())
-    const collectionRoot = await resolveCollectionRoot(flags.collection)
+    const collectionRoot = await resolveCollectionRoot(flags.collection, runtime)
     await assertExistingDirectory(collectionRoot, `Collection path does not exist: ${collectionRoot}`)
 
     const symlinkArgs = argv.map(String)

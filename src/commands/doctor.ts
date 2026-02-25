@@ -2,7 +2,7 @@ import {Command, Flags} from '@oclif/core'
 import {lstat, mkdir, readdir, readlink, unlink} from 'node:fs/promises'
 import path from 'node:path'
 
-import {resolveCollectionRoot} from '../lib/config'
+import {createMdmdRuntime, resolveCollectionRoot} from '../lib/config'
 import {ensureGitExcludeEntry, hasGitExcludeEntry} from '../lib/git'
 import {openIndexDb} from '../lib/index-db'
 import {refreshIndex, scanCollectionMarkdownFiles} from '../lib/refresh-index'
@@ -33,12 +33,12 @@ type IndexedRow = {
 
 export default class Doctor extends Command {
   static override description = 'Run mdmd health checks for index, symlinks, and config'
+  public static override enableJsonFlag = true
   static override examples = [
     '<%= config.bin %> <%= command.id %>',
     '<%= config.bin %> <%= command.id %> --scope symlinks',
     '<%= config.bin %> <%= command.id %> --fix --json',
   ]
-  public static enableJsonFlag = true
   static override flags = {
     collection: Flags.directory({
       char: 'c',
@@ -55,12 +55,13 @@ export default class Doctor extends Command {
     }),
   }
 
-  async run(): Promise<void> {
+  async run(): Promise<DoctorReport> {
     const {flags} = await this.parse(Doctor)
+    const runtime = createMdmdRuntime(this.config.configDir)
     const cwd = path.resolve(process.cwd())
 
     try {
-      const collectionRoot = await resolveCollectionRoot(flags.collection)
+      const collectionRoot = await resolveCollectionRoot(flags.collection, runtime)
       const scopes = resolveScopes(flags.scope)
 
       let issues = await collectDoctorIssues(cwd, collectionRoot, scopes)
@@ -82,11 +83,11 @@ export default class Doctor extends Command {
       if (issues.length > 0) {
         process.exitCode = 1
       }
+
       return report
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.error(`doctor failed: ${message}`, {exit: 2})
-      return {message}
     }
   }
 }

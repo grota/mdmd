@@ -1,7 +1,9 @@
 import {Command, Flags} from '@oclif/core'
 
 import {
+  createMdmdRuntime,
   type MdmdConfig,
+  type MdmdRuntime,
   readMdmdConfig,
   resolveCollectionPathFromMdmdConfig,
   resolveCollectionRoot,
@@ -14,8 +16,17 @@ type ConfigOutput = {
   resolvedError?: null | string
 }
 
+type ConfigGetOutput = {
+  key: string
+  value: string
+}
+
+type ConfigMutationOutput = Record<string, null | string>
+type ConfigActionOutput = ConfigGetOutput | ConfigMutationOutput | ConfigOutput
+
 export default class Config extends Command {
   static override description = 'Read and manage mdmd configuration'
+  public static override enableJsonFlag = true
   static override examples = [
     '<%= config.bin %> <%= command.id %> list --resolved',
     '<%= config.bin %> <%= command.id %> get collection',
@@ -27,15 +38,16 @@ export default class Config extends Command {
       description: 'Resolve effective values including env/Obsidian fallback',
     }),
   }
-  public static enableJsonFlag = true
   static override strict = false
 
-  async run(): Promise<void> {
+  async run(): Promise<ConfigActionOutput> {
     const {argv, flags} = await this.parse(Config)
+    const runtime = createMdmdRuntime(this.config.configDir)
+
     const [action = 'list', ...rest] = argv.map(String)
 
     if (action === 'list') {
-      return await this.handleList(flags)
+      return this.handleList(runtime, flags)
     }
 
     if (action === 'get') {
@@ -44,7 +56,7 @@ export default class Config extends Command {
         this.error('Supported config keys: collection', {exit: 1})
       }
 
-      return await this.handleGet(flags, key)
+      return this.handleGet(runtime, flags, key)
     }
 
     if (action === 'set') {
@@ -58,7 +70,7 @@ export default class Config extends Command {
         this.error('Usage: mdmd config set collection <value>', {exit: 1})
       }
 
-      return await this.handleSet(key, value)
+      return this.handleSet(runtime, key, value)
     }
 
     if (action === 'unset') {
@@ -67,27 +79,25 @@ export default class Config extends Command {
         this.error('Supported config keys: collection', {exit: 1})
       }
 
-      return await this.handleUnset(key)
+      return this.handleUnset(runtime, key)
     }
 
     this.error(`Unknown config action: ${action}. Use list|get|set|unset.`, {exit: 1})
   }
 
-  private async handleGet(flags: {resolved?: boolean}, key: string): Promise<void> {
-    const config = await readMdmdConfig()
+  private async handleGet(runtime: MdmdRuntime, flags: {resolved?: boolean}, key: string): Promise<ConfigGetOutput> {
+    const config = await readMdmdConfig(runtime)
     const rawValue = readConfigValue(config, key)
 
     if (flags.resolved) {
-      let resolved = ''
       try {
-        resolved = await resolveCollectionRoot()
+        const resolved = await resolveCollectionRoot(undefined, runtime)
+        this.log(resolved)
+        return {key, value: resolved}
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         this.error(message, {exit: 1})
       }
-
-      this.log(resolved)
-      return {key, value: resolved}
     }
 
     if (!rawValue) {
@@ -98,23 +108,25 @@ export default class Config extends Command {
     return {key, value: rawValue}
   }
 
-  private async handleList(flags: {resolved?: boolean}): Promise<void> {
-    const config = await readMdmdConfig()
-    const output = await buildConfigOutput(config, Boolean(flags.resolved))
+  private async handleList(runtime: MdmdRuntime, flags: {resolved?: boolean}): Promise<ConfigOutput> {
+    const config = await readMdmdConfig(runtime)
+    const output = await buildConfigOutput(config, Boolean(flags.resolved), runtime)
 
     this.log(`collection: ${output.collection ?? '(unset)'}`)
     if (flags.resolved) {
-      if (output.resolvedCollection) {
-        this.log(`collection (resolved): ${output.resolvedCollection}`)
+      const {resolvedCollection} = output
+      if (resolvedCollection) {
+        this.log(`collection (resolved): ${resolvedCollection}`)
       } else {
         this.log(`collection (resolved): (unresolved: ${output.resolvedError ?? 'unknown error'})`)
       }
     }
+
     return output
   }
 
-  private async handleSet(key: string, value: string): Promise<void> {
-    const config = await readMdmdConfig()
+  private async handleSet(runtime: MdmdRuntime, key: string, value: string): Promise<Record<string, string>> {
+    const config = await readMdmdConfig(runtime)
     const nextConfig: MdmdConfig = {...config}
 
     if (key === 'collection') {
@@ -122,13 +134,13 @@ export default class Config extends Command {
       delete nextConfig.collectionPath
     }
 
-    await writeMdmdConfig(nextConfig)
+    await writeMdmdConfig(nextConfig, runtime)
     this.log(`Set ${key}=${value}`)
-    return { [key]: value }
+    return {[key]: value}
   }
 
-  private async handleUnset(key: string): Promise<void> {
-    const config = await readMdmdConfig()
+  private async handleUnset(runtime: MdmdRuntime, key: string): Promise<ConfigMutationOutput> {
+    const config = await readMdmdConfig(runtime)
     const nextConfig: MdmdConfig = {...config}
 
     if (key === 'collection') {
@@ -136,7 +148,7 @@ export default class Config extends Command {
       delete nextConfig.collectionPath
     }
 
-    await writeMdmdConfig(nextConfig)
+    await writeMdmdConfig(nextConfig, runtime)
     this.log(`Unset ${key}`)
     return {[key]: null}
   }
@@ -154,7 +166,7 @@ function readConfigValue(config: MdmdConfig, key: string): string | undefined {
   return resolveCollectionPathFromMdmdConfig(config)
 }
 
-async function buildConfigOutput(config: MdmdConfig, includeResolved: boolean): Promise<ConfigOutput> {
+async function buildConfigOutput(config: MdmdConfig, includeResolved: boolean, runtime: MdmdRuntime): Promise<ConfigOutput> {
   const output: ConfigOutput = {
     collection: resolveCollectionPathFromMdmdConfig(config) ?? null,
   }
@@ -164,7 +176,7 @@ async function buildConfigOutput(config: MdmdConfig, includeResolved: boolean): 
   }
 
   try {
-    output.resolvedCollection = await resolveCollectionRoot()
+    output.resolvedCollection = await resolveCollectionRoot(undefined, runtime)
     output.resolvedError = null
   } catch (error) {
     output.resolvedCollection = null

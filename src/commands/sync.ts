@@ -2,7 +2,7 @@ import {Command, Flags} from '@oclif/core'
 import {lstat, mkdir, readdir, unlink} from 'node:fs/promises'
 import path from 'node:path'
 
-import {resolveCollectionRoot} from '../lib/config'
+import {createMdmdRuntime, resolveCollectionRoot} from '../lib/config'
 import {ensureGitExcludeEntry} from '../lib/git'
 import {refreshIndex} from '../lib/refresh-index'
 import {ensureSymlinkTarget} from '../lib/symlink'
@@ -24,8 +24,9 @@ static override flags = {
 
   async run(): Promise<void> {
     const {flags} = await this.parse(Sync)
+    const runtime = createMdmdRuntime(this.config.configDir)
     const cwd = path.resolve(process.cwd())
-    const collectionRoot = await resolveCollectionRoot(flags.collection)
+    const collectionRoot = await resolveCollectionRoot(flags.collection, runtime)
     await assertExistingDirectory(collectionRoot, `Collection path does not exist: ${collectionRoot}`)
 
     const refreshResult = await refreshIndex(collectionRoot)

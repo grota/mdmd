@@ -4,7 +4,7 @@ import {constants as fsConstants} from 'node:fs'
 import {access, lstat, mkdir, readdir, readFile, stat, unlink, writeFile} from 'node:fs/promises'
 import path from 'node:path'
 
-import {resolveCollectionRoot} from '../lib/config'
+import {createMdmdRuntime, resolveCollectionRoot} from '../lib/config'
 import {parseFrontmatter, stringifyFrontmatter} from '../lib/frontmatter'
 import {ensureGitExcludeEntry, resolveGitHeadSha} from '../lib/git'
 import {findPathByMdmdId, openIndexDb, toCollectionRelativePath, upsertIndexNote} from '../lib/index-db'
@@ -34,11 +34,12 @@ static override flags = {
 
   async run(): Promise<void> {
     const {args, flags} = await this.parse(Ingest)
+    const runtime = createMdmdRuntime(this.config.configDir)
     const cwd = path.resolve(process.cwd())
     const sourcePath = path.resolve(cwd, args.file)
     await assertMarkdownFile(sourcePath)
 
-    const collectionRoot = await resolveCollectionRoot(flags.collection)
+    const collectionRoot = await resolveCollectionRoot(flags.collection, runtime)
     await assertExistingDirectory(collectionRoot, `Collection path does not exist: ${collectionRoot}`)
 
     if (isPathInsideRoot(sourcePath, collectionRoot)) {
