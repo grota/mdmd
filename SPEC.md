@@ -81,7 +81,7 @@ Steps:
    - `git_sha`: set to HEAD SHA if cwd is a git repo, omit otherwise.
 3. Move the file into the collection notes directory:
    `<collection_root>/mdmd_notes/`.
-   - If a file with the same name already exists in `mdmd_notes/`, append a short
+   - If a file with the same name already exists in `<collection_root>/mdmd_notes/`, append a short
      suffix (e.g., `note_2.md`) to avoid collisions.
 4. Upsert the note into the SQLite index (so it's immediately available to
    `sync` without requiring a full `refresh_index`).
@@ -90,7 +90,7 @@ Steps:
 7. If cwd is a git repo, ensure `mdmd_notes/` is in `.git/info/exclude`.
 
 **Error cases:**
-- File does not exist: error.
+- File to be ingested does not exist: error.
 - File is already in the collection (detected by path prefix): error, suggest using
   `sync` instead.
 - File already has a `mdmd_id` that exists in the index: error, the note is

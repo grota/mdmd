@@ -8,9 +8,11 @@ import {resolveCollectionRoot} from '../lib/config'
 import {parseFrontmatter, stringifyFrontmatter} from '../lib/frontmatter'
 import {ensureGitExcludeEntry, resolveGitHeadSha} from '../lib/git'
 import {findPathByMdmdId, openIndexDb, toCollectionRelativePath, upsertIndexNote} from '../lib/index-db'
+import {refreshIndex} from '../lib/refresh-index'
 import {ensureSymlinkTarget} from '../lib/symlink'
+import {NOTES_DIR_NAME} from '../lib/sync-state'
 
-const NOTES_DIR_NAME = 'mdmd_notes'
+const ISO_8601_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 export default class Ingest extends Command {
@@ -48,14 +50,22 @@ static override flags = {
 
     const sourceText = await readFile(sourcePath, 'utf8')
     const {body, frontmatter: existingFrontmatter} = parseFrontmatter(sourceText)
-    const mdmdId = resolveMdmdId(existingFrontmatter.mdmd_id)
+    const rawMdmdId = existingFrontmatter.mdmd_id
+    const hasExistingMdmdId = rawMdmdId !== undefined && rawMdmdId !== null && rawMdmdId !== ''
+    const mdmdId = hasExistingMdmdId ? validateAndReturnExistingMdmdId(rawMdmdId) : randomUUID()
+
+    if (hasExistingMdmdId) {
+      // If the source already carries mdmd_id, refresh first so duplicate-id lookup
+      // is based on current collection state (not potentially stale index rows).
+      await refreshIndex(collectionRoot)
+    }
 
     const db = openIndexDb()
     try {
       const existingPath = findPathByMdmdId(db, mdmdId)
       if (existingPath) {
         this.error(
-          `File already has a managed mdmd_id (${mdmdId}) at ${existingPath}. Use \`mdmd sync\` instead.`,
+          `A note with id ${mdmdId} already exists in the collection at ${existingPath}. Use \`mdmd sync\` instead.`,
           {exit: 1},
         )
       }
@@ -78,6 +88,7 @@ static override flags = {
         // eslint-disable-next-line camelcase
         nextFrontmatter.git_sha = gitSha
       } else {
+        // remove stale git_sha carried over from existing frontmatter when cwd is not a git repo
         delete nextFrontmatter.git_sha
       }
 
@@ -144,11 +155,7 @@ async function assertExistingDirectory(dirPath: string, errorMessage: string): P
   }
 }
 
-function resolveMdmdId(rawMdmdId: unknown): string {
-  if (rawMdmdId === undefined || rawMdmdId === null || rawMdmdId === '') {
-    return randomUUID()
-  }
-
+function validateAndReturnExistingMdmdId(rawMdmdId: unknown): string {
   if (typeof rawMdmdId !== 'string' || !UUID_V4_PATTERN.test(rawMdmdId)) {
     throw new Error('Invalid frontmatter mdmd_id: expected UUID v4')
   }
@@ -157,8 +164,11 @@ function resolveMdmdId(rawMdmdId: unknown): string {
 }
 
 function resolveCreatedAt(rawCreatedAt: unknown, fallback: string): string {
-  if (typeof rawCreatedAt === 'string' && rawCreatedAt.trim().length > 0) {
-    return rawCreatedAt
+  if (typeof rawCreatedAt === 'string') {
+    const value = rawCreatedAt.trim()
+    if (ISO_8601_TIMESTAMP_PATTERN.test(value) && !Number.isNaN(Date.parse(value))) {
+      return value
+    }
   }
 
   return fallback

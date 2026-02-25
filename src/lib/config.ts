@@ -135,11 +135,14 @@ async function resolveObsidianVaultPath(): Promise<string | undefined> {
       return undefined
     }
 
+    // Some Obsidian variants persist the active vault path directly.
     const directPath = parsed.currentVaultPath
     if (typeof directPath === 'string' && directPath.trim().length > 0) {
       return directPath
     }
 
+    // Other variants persist vaults keyed by ID and expose activity hints
+    // such as lastOpenVault and/or per-vault open=true.
     const {vaults} = parsed
     if (!isRecord(vaults)) {
       return undefined
@@ -150,12 +153,14 @@ async function resolveObsidianVaultPath(): Promise<string | undefined> {
       candidates.push(parsed.lastOpenVault)
     }
 
+    // Keep support broad by also considering any vault currently marked as open.
     for (const [vaultId, vaultValue] of Object.entries(vaults)) {
       if (isRecord(vaultValue) && vaultValue.open === true) {
         candidates.push(vaultId)
       }
     }
 
+    // Return the first candidate with a valid path.
     for (const candidate of candidates) {
       const vaultValue = vaults[candidate]
       if (!isRecord(vaultValue)) {

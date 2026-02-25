@@ -23,13 +23,11 @@ export default class Config extends Command {
     '<%= config.bin %> <%= command.id %> unset collection',
   ]
   static override flags = {
-    json: Flags.boolean({
-      description: 'Emit JSON output',
-    }),
     resolved: Flags.boolean({
       description: 'Resolve effective values including env/Obsidian fallback',
     }),
   }
+  public static enableJsonFlag = true
   static override strict = false
 
   async run(): Promise<void> {
@@ -37,8 +35,7 @@ export default class Config extends Command {
     const [action = 'list', ...rest] = argv.map(String)
 
     if (action === 'list') {
-      await this.handleList(flags)
-      return
+      return await this.handleList(flags)
     }
 
     if (action === 'get') {
@@ -47,8 +44,7 @@ export default class Config extends Command {
         this.error('Supported config keys: collection', {exit: 1})
       }
 
-      await this.handleGet(flags, key)
-      return
+      return await this.handleGet(flags, key)
     }
 
     if (action === 'set') {
@@ -62,8 +58,7 @@ export default class Config extends Command {
         this.error('Usage: mdmd config set collection <value>', {exit: 1})
       }
 
-      await this.handleSet(key, value)
-      return
+      return await this.handleSet(key, value)
     }
 
     if (action === 'unset') {
@@ -72,14 +67,13 @@ export default class Config extends Command {
         this.error('Supported config keys: collection', {exit: 1})
       }
 
-      await this.handleUnset(key)
-      return
+      return await this.handleUnset(key)
     }
 
     this.error(`Unknown config action: ${action}. Use list|get|set|unset.`, {exit: 1})
   }
 
-  private async handleGet(flags: {json?: boolean; resolved?: boolean}, key: string): Promise<void> {
+  private async handleGet(flags: {resolved?: boolean}, key: string): Promise<void> {
     const config = await readMdmdConfig()
     const rawValue = readConfigValue(config, key)
 
@@ -92,34 +86,21 @@ export default class Config extends Command {
         this.error(message, {exit: 1})
       }
 
-      if (flags.json) {
-        this.log(JSON.stringify({key, value: resolved}, null, 2))
-      } else {
-        this.log(resolved)
-      }
-
-      return
+      this.log(resolved)
+      return {key, value: resolved}
     }
 
     if (!rawValue) {
       this.error(`Config key is not set: ${key}`, {exit: 1})
     }
 
-    if (flags.json) {
-      this.log(JSON.stringify({key, value: rawValue}, null, 2))
-    } else {
-      this.log(rawValue)
-    }
+    this.log(rawValue)
+    return {key, value: rawValue}
   }
 
-  private async handleList(flags: {json?: boolean; resolved?: boolean}): Promise<void> {
+  private async handleList(flags: {resolved?: boolean}): Promise<void> {
     const config = await readMdmdConfig()
     const output = await buildConfigOutput(config, Boolean(flags.resolved))
-
-    if (flags.json) {
-      this.log(JSON.stringify(output, null, 2))
-      return
-    }
 
     this.log(`collection: ${output.collection ?? '(unset)'}`)
     if (flags.resolved) {
@@ -129,6 +110,7 @@ export default class Config extends Command {
         this.log(`collection (resolved): (unresolved: ${output.resolvedError ?? 'unknown error'})`)
       }
     }
+    return output
   }
 
   private async handleSet(key: string, value: string): Promise<void> {
@@ -142,6 +124,7 @@ export default class Config extends Command {
 
     await writeMdmdConfig(nextConfig)
     this.log(`Set ${key}=${value}`)
+    return { [key]: value }
   }
 
   private async handleUnset(key: string): Promise<void> {
@@ -155,6 +138,7 @@ export default class Config extends Command {
 
     await writeMdmdConfig(nextConfig)
     this.log(`Unset ${key}`)
+    return {[key]: null}
   }
 }
 

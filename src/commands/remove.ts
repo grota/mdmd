@@ -6,8 +6,7 @@ import {createInterface} from 'node:readline'
 import {resolveCollectionRoot} from '../lib/config'
 import {parseFrontmatter} from '../lib/frontmatter'
 import {deleteIndexNoteByPath, openIndexDb, toCollectionRelativePath} from '../lib/index-db'
-
-const NOTES_DIR_NAME = 'mdmd_notes'
+import {NOTES_DIR_NAME} from '../lib/sync-state'
 
 type ValidatedRemoval = {
   pathInCollection: string
@@ -17,9 +16,10 @@ type ValidatedRemoval = {
 
 export default class Remove extends Command {
   static override args = {
-    symlink: Args.string({
-      description: 'Symlink path in mdmd_notes/ to remove from the collection',
-      required: false,
+    symlink: Args.file({
+      description: `Symlink path in ${NOTES_DIR_NAME}/ to remove from the collection`,
+      required: true,
+      exists: true
     }),
   }
   static override description = 'Remove note(s) from the collection by symlink path'
@@ -51,9 +51,6 @@ export default class Remove extends Command {
     await assertExistingDirectory(collectionRoot, `Collection path does not exist: ${collectionRoot}`)
 
     const symlinkArgs = argv.map(String)
-    if (symlinkArgs.length === 0) {
-      this.error('At least one symlink path is required', {exit: 1})
-    }
 
     const validatedRemovals = await Promise.all(
       symlinkArgs.map(async (symlinkArg) => this.validateRemovalInput(cwd, collectionRoot, symlinkArg)),

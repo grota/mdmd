@@ -113,6 +113,70 @@ created_at: 2020-01-01T00:00:00.000Z
     await expectPathExists(path.join(collectionDir, 'mdmd_notes', 'note_2.md'))
     await expectPathExists(path.join(workDir, 'mdmd_notes', 'note_2.md'))
   })
+
+  it('refreshes stale index state before duplicate-id lookup when source already has mdmd_id', async () => {
+    tempRoot = await mkdtemp(path.join(tmpdir(), 'mdmd-ingest-test-'))
+    const workDir = path.join(tempRoot, 'work')
+    const collectionDir = path.join(tempRoot, 'collection')
+    const homeDir = path.join(tempRoot, 'home')
+    const indexDbPath = path.join(tempRoot, 'index.db')
+    await mkdir(workDir, {recursive: true})
+    await mkdir(collectionDir, {recursive: true})
+    await mkdir(homeDir, {recursive: true})
+
+    const existingMdmdId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+    const staleDb = new Database(indexDbPath)
+    staleDb.exec(`
+      CREATE TABLE index_notes (
+        path_in_collection TEXT NOT NULL PRIMARY KEY,
+        mdmd_id TEXT,
+        mtime INTEGER NOT NULL,
+        size INTEGER NOT NULL,
+        frontmatter TEXT
+      );
+      CREATE UNIQUE INDEX idx_notes_mdmd_id ON index_notes(mdmd_id) WHERE mdmd_id IS NOT NULL;
+    `)
+    staleDb.query(`
+      INSERT INTO index_notes (path_in_collection, mdmd_id, mtime, size, frontmatter)
+      VALUES ('mdmd_notes/stale.md', ?1, 1, 1, '{"mdmd_id":"${existingMdmdId}","path":"/tmp/stale"}');
+    `).run(existingMdmdId)
+    staleDb.close()
+
+    await writeFile(
+      path.join(workDir, 'note.md'),
+      `---
+mdmd_id: ${existingMdmdId}
+---
+# ingest with existing id
+`,
+      'utf8',
+    )
+
+    const result = spawnSync('bun', [cliEntrypoint, 'ingest', 'note.md', '--collection', collectionDir], {
+      cwd: workDir,
+      encoding: 'utf8',
+      env: {...process.env, HOME: homeDir, [INDEX_DB_PATH_ENV_VAR]: indexDbPath},
+    })
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).to.equal(0)
+    await expectPathExists(path.join(collectionDir, 'mdmd_notes', 'note.md'))
+
+    const db = new Database(indexDbPath)
+    const staleCount = db.query(`
+      SELECT COUNT(*) AS count
+      FROM index_notes
+      WHERE path_in_collection = 'mdmd_notes/stale.md';
+    `).get() as {count: number}
+    const ingestedCount = db.query(`
+      SELECT COUNT(*) AS count
+      FROM index_notes
+      WHERE path_in_collection = 'mdmd_notes/note.md' AND mdmd_id = ?1;
+    `).get(existingMdmdId) as {count: number}
+    db.close()
+
+    expect(staleCount.count).to.equal(0)
+    expect(ingestedCount.count).to.equal(1)
+  })
 })
 
 async function expectPathExists(targetPath: string): Promise<void> {

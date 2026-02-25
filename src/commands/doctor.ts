@@ -38,6 +38,7 @@ export default class Doctor extends Command {
     '<%= config.bin %> <%= command.id %> --scope symlinks',
     '<%= config.bin %> <%= command.id %> --fix --json',
   ]
+  public static enableJsonFlag = true
   static override flags = {
     collection: Flags.directory({
       char: 'c',
@@ -46,9 +47,6 @@ export default class Doctor extends Command {
     }),
     fix: Flags.boolean({
       description: 'Apply safe deterministic fixes',
-    }),
-    json: Flags.boolean({
-      description: 'Emit machine-readable JSON output',
     }),
     scope: Flags.string({
       default: 'all',
@@ -79,18 +77,16 @@ export default class Doctor extends Command {
         issues,
       }
 
-      if (flags.json) {
-        this.log(JSON.stringify(report, null, 2))
-      } else {
-        printHumanReport(this, report)
-      }
+      printHumanReport(this, report)
 
       if (issues.length > 0) {
         process.exitCode = 1
       }
+      return report
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.error(`doctor failed: ${message}`, {exit: 2})
+      return {message}
     }
   }
 }
