@@ -90,6 +90,45 @@ created_at: 2020-01-01T00:00:00.000Z
     expect(row?.mdmd_id).to.equal(frontmatter.mdmd_id)
   })
 
+  it('ingests multiple files from one command invocation', async () => {
+    tempRoot = await mkdtemp(path.join(tmpdir(), 'mdmd-ingest-test-'))
+    const workDir = path.join(tempRoot, 'work')
+    const collectionDir = path.join(tempRoot, 'collection')
+    const homeDir = path.join(tempRoot, 'home')
+    const indexDbPath = path.join(tempRoot, 'index.db')
+    await mkdir(workDir, {recursive: true})
+    await mkdir(collectionDir, {recursive: true})
+    await mkdir(homeDir, {recursive: true})
+
+    await writeFile(path.join(workDir, 'note-a.md'), '# A\n', 'utf8')
+    await writeFile(path.join(workDir, 'note-b.md'), '# B\n', 'utf8')
+
+    const result = spawnSync('bun', [cliEntrypoint, 'ingest', 'note-a.md', 'note-b.md', '--collection', collectionDir], {
+      cwd: workDir,
+      encoding: 'utf8',
+      env: {...process.env, HOME: homeDir, [INDEX_DB_PATH_ENV_VAR]: indexDbPath},
+    })
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).to.equal(0)
+
+    await expectPathExists(path.join(collectionDir, 'mdmd_notes', 'note-a.md'))
+    await expectPathExists(path.join(collectionDir, 'mdmd_notes', 'note-b.md'))
+    await expectPathExists(path.join(workDir, 'mdmd_notes', 'note-a.md'))
+    await expectPathExists(path.join(workDir, 'mdmd_notes', 'note-b.md'))
+    await expectPathMissing(path.join(workDir, 'note-a.md'))
+    await expectPathMissing(path.join(workDir, 'note-b.md'))
+
+    const db = new Database(indexDbPath)
+    const rowCount = db.query(`
+      SELECT COUNT(*) AS count
+      FROM index_notes
+      WHERE path_in_collection IN ('mdmd_notes/note-a.md', 'mdmd_notes/note-b.md')
+    `).get() as {count: number}
+    db.close()
+
+    expect(rowCount.count).to.equal(2)
+  })
+
   it('creates a suffixed filename when collection filename already exists', async () => {
     tempRoot = await mkdtemp(path.join(tmpdir(), 'mdmd-ingest-test-'))
     const workDir = path.join(tempRoot, 'work')

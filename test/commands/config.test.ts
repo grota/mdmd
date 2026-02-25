@@ -28,6 +28,19 @@ describe('mdmd config command', () => {
     }
   })
 
+  it('lists available config subcommands from root command', async () => {
+    tempRoot = await mkdtemp(path.join(tmpdir(), 'mdmd-config-cmd-test-'))
+    const {homeDir, workDir, xdgConfigHome} = await setupDirs(tempRoot)
+
+    const rootResult = runCli(['config'], workDir, homeDir, xdgConfigHome)
+    expect(rootResult.status, `${rootResult.stdout}\n${rootResult.stderr}`).to.equal(0)
+    expect(rootResult.stdout).to.contain('Available config subcommands:')
+    expect(rootResult.stdout).to.contain('mdmd config get')
+    expect(rootResult.stdout).to.contain('mdmd config list')
+    expect(rootResult.stdout).to.contain('mdmd config set')
+    expect(rootResult.stdout).to.contain('mdmd config unset')
+  })
+
   it('supports set/get/unset for collection config', async () => {
     tempRoot = await mkdtemp(path.join(tmpdir(), 'mdmd-config-cmd-test-'))
     const {homeDir, workDir, xdgConfigHome} = await setupDirs(tempRoot)

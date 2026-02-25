@@ -15,32 +15,49 @@ import {NOTES_DIR_NAME} from '../lib/sync-state'
 const ISO_8601_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
+type IngestContext = {
+  collectionRoot: string
+  cwd: string
+}
+
 export default class Ingest extends Command {
   static override args = {
     file: Args.string({description: 'Path to an existing markdown file', required: true}),
   }
-static override description = 'Ingest a markdown file into the collection and recreate it as a symlink'
-static override examples = [
+  static override description = 'Ingest markdown file(s) into the collection and recreate them as symlinks'
+  static override examples = [
     '<%= config.bin %> <%= command.id %> ./notes/todo.md',
+    '<%= config.bin %> <%= command.id %> ./notes/todo.md ./notes/ideas.md',
     '<%= config.bin %> <%= command.id %> ./notes/todo.md --collection "/path/to/vault"',
   ]
-static override flags = {
+  static override flags = {
     collection: Flags.directory({
       char: 'c',
       description: 'Collection root path (highest priority over env/config defaults)',
       exists: true,
     }),
   }
+  static override strict = false
 
   async run(): Promise<void> {
-    const {args, flags} = await this.parse(Ingest)
+    const {args, argv, flags} = await this.parse(Ingest)
     const runtime = createMdmdRuntime(this.config.configDir)
     const cwd = path.resolve(process.cwd())
-    const sourcePath = path.resolve(cwd, args.file)
-    await assertMarkdownFile(sourcePath)
-
     const collectionRoot = await resolveCollectionRoot(flags.collection, runtime)
     await assertExistingDirectory(collectionRoot, `Collection path does not exist: ${collectionRoot}`)
+
+    const fileArgs = argv.length > 0 ? argv.map(String) : [args.file]
+    const sourcePaths = fileArgs.map((filePath) => path.resolve(cwd, filePath))
+    const context: IngestContext = {collectionRoot, cwd}
+    for (const sourcePath of sourcePaths) {
+      // eslint-disable-next-line no-await-in-loop
+      await this.ingestSingleFile(sourcePath, context)
+    }
+  }
+
+  private async ingestSingleFile(sourcePath: string, context: IngestContext): Promise<void> {
+    const {collectionRoot, cwd} = context
+    await assertMarkdownFile(sourcePath)
 
     if (isPathInsideRoot(sourcePath, collectionRoot)) {
       this.error(

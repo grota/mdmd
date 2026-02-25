@@ -67,11 +67,12 @@ If that still generates a collision error out.
 
 ## Commands
 
-### `mdmd ingest <file>`
+### `mdmd ingest <file> [file...]`
 
-Takes an existing markdown file, prepares it for the collection, and symlinks it back.
+Takes one or more existing markdown files, prepares them for the collection, and
+symlinks them back.
 
-Steps:
+For each input file (processed in argument order):
 1. Parse existing frontmatter (if any) and preserve it.
 2. Set/overwrite `mdmd` managed properties:
    - `mdmd_id`: generate UUID v4 (unless already present).
@@ -88,6 +89,9 @@ Steps:
 5. Create working symlink directory `mdmd_notes/` in the cwd if it does not exist.
 6. Create a symlink from `<cwd>/mdmd_notes/<filename>` to the collection file.
 7. If cwd is a git repo, ensure `mdmd_notes/` is in `.git/info/exclude`.
+
+When multiple files are provided, ingest stops at the first error. Files already
+ingested earlier in that invocation remain ingested.
 
 **Error cases:**
 - File to be ingested does not exist: error.
@@ -348,7 +352,11 @@ Manages mdmd configuration values.
 **Storage format:** YAML (comment-friendly) at
 `$XDG_CONFIG_HOME/mdmd/config.yaml` (fallback `~/.config/mdmd/config.yaml`).
 
+`config` uses topic-style subcommands (`mdmd config <subcommand>`) with oclif's
+space topic separator.
+
 **Subcommands:**
+- `mdmd config` (prints available config subcommands)
 - `mdmd config list [--resolved] [--json]`
 - `mdmd config get collection [--resolved] [--json]`
 - `mdmd config set collection <path>`
