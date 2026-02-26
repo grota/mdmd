@@ -31,7 +31,6 @@ Notes managed by `mdmd` have the following frontmatter properties:
 |------------------|------------|----------|--------------------------------------------------|
 | `mdmd_id`        | UUID v4    | Yes      | Unique identifier for the note                   |
 | `path`           | `string`   | Yes      | Directory path this note is related to           |
-| `last_updated_at`| ISO 8601   | Yes      | Timestamp of last modification by `mdmd`         |
 | `created_at`     | ISO 8601   | Yes      | Timestamp of creation by `mdmd`                  |
 | `git_sha`        | string     | No       | HEAD commit SHA, set if cwd is a git repo at ingest time |
 
@@ -77,7 +76,6 @@ For each input file (processed in argument order):
 2. Set/overwrite `mdmd` managed properties:
    - `mdmd_id`: generate UUID v4 (unless already present).
    - `path`: set to `<cwd>` (absolute path to current directory).
-   - `last_updated_at`: set to current timestamp.
    - `created_at`: set to current timestamp (if not already present).
    - `git_sha`: set to HEAD SHA if cwd is a git repo, omit otherwise.
 3. Move the file into the collection notes directory:
@@ -317,7 +315,7 @@ By default, `doctor` is **read-only** and reports problems without changing file
   - Stale index rows whose `path_in_collection` no longer exists in collection
   - Missing index rows for markdown files present in collection
   - Duplicate `mdmd_id` values (if present)
-  - Invalid managed metadata in frontmatter (`mdmd_id`, `path`, `created_at`, `last_updated_at`)
+  - Invalid managed metadata in frontmatter (`mdmd_id`, `path`, `created_at`)
 - **Symlinks scope**
   - Missing expected symlinks in `<cwd>/mdmd_notes/`
   - Orphan symlinks not represented by current managed-note selection

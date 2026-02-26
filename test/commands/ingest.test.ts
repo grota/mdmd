@@ -73,7 +73,6 @@ created_at: 2020-01-01T00:00:00.000Z
     expect(frontmatter.title).to.equal('Existing title')
     expect(frontmatter.created_at).to.equal('2020-01-01T00:00:00.000Z')
     expect(frontmatter.path).to.equal(workDir)
-    expect(frontmatter.last_updated_at).to.be.a('string')
     expect(frontmatter.mdmd_id).to.be.a('string')
     expect(UUID_V4_PATTERN.test(String(frontmatter.mdmd_id))).to.equal(true)
 

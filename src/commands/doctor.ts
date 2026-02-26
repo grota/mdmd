@@ -274,18 +274,6 @@ function collectManagedMetadataIssues(rows: IndexedRow[]): DoctorIssue[] {
         severity: 'warning',
       })
     }
-
-     
-    if (typeof frontmatter.last_updated_at !== 'string' || frontmatter.last_updated_at.trim().length === 0) {
-      issues.push({
-        code: 'index.invalid_last_updated_at',
-         
-        message: 'Managed note has missing or invalid frontmatter last_updated_at',
-        path: row.pathInCollection,
-        scope: 'index',
-        severity: 'warning',
-      })
-    }
   }
 
   return issues

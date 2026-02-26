@@ -96,8 +96,6 @@ export default class Ingest extends Command {
         // eslint-disable-next-line camelcase
         created_at: resolveCreatedAt(existingFrontmatter.created_at, now),
         // eslint-disable-next-line camelcase
-        last_updated_at: now,
-        // eslint-disable-next-line camelcase
         mdmd_id: mdmdId,
         path: cwd,
       }
