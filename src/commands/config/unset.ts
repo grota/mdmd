@@ -25,6 +25,6 @@ export default class ConfigUnset extends Command {
     const runtime = createMdmdRuntime(this.config.configDir)
     await unsetConfigValue(runtime, args.key)
     this.log(`Unset ${args.key}`)
-    return {[args.key]: null}
+    return {[args.key]: null} as unknown as ConfigUnsetOutput
   }
 }

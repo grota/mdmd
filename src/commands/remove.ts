@@ -127,13 +127,7 @@ export default class Remove extends Command {
     const targetContents = await readFile(targetPath, 'utf8')
     const {frontmatter} = parseFrontmatter(targetContents)
 
-    // Support both legacy scalar 'path' and new 'paths' array
-    let notePaths: string[] = []
-    if (Array.isArray(frontmatter.paths)) {
-      notePaths = frontmatter.paths as string[]
-    } else if (typeof frontmatter.path === 'string' && frontmatter.path.trim().length > 0) {
-      notePaths = [frontmatter.path]
-    }
+    const notePaths = Array.isArray(frontmatter.paths) ? (frontmatter.paths as string[]) : []
 
     if (notePaths.length === 0) {
       throw new Error(`Note has no paths property in frontmatter: ${targetPath}`)

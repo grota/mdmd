@@ -4,17 +4,20 @@ import {
   readMdmdConfig,
   resolveCollectionPathFromMdmdConfig,
   resolveCollectionRoot,
+  SUPPORTED_CONFIG_KEYS,
+  type SupportedConfigKey,
   writeMdmdConfig,
 } from './config'
 
-export const SUPPORTED_CONFIG_KEYS = ['collection'] as const
-
-export type SupportedConfigKey = (typeof SUPPORTED_CONFIG_KEYS)[number]
+export type {SupportedConfigKey} from './config'
+export {SUPPORTED_CONFIG_KEYS} from './config'
 
 export type ConfigOutput = {
   collection: null | string
+  'ingest-dest': null | string
   resolvedCollection?: null | string
   resolvedError?: null | string
+  'symlink-dir': null | string
 }
 
 export function getSupportedConfigKeysMessage(): string {
@@ -22,19 +25,24 @@ export function getSupportedConfigKeysMessage(): string {
 }
 
 export function isSupportedConfigKey(key: string | undefined): key is SupportedConfigKey {
-  return key === 'collection'
+  return SUPPORTED_CONFIG_KEYS.includes(key as SupportedConfigKey)
 }
 
 export function readConfigValue(config: MdmdConfig, key: SupportedConfigKey): string | undefined {
   if (key === 'collection') {
     return resolveCollectionPathFromMdmdConfig(config)
   }
+
+  const val = config[key]
+  return typeof val === 'string' && val.trim().length > 0 ? val : undefined
 }
 
 export async function listConfigValues(runtime: MdmdRuntime, includeResolved: boolean): Promise<ConfigOutput> {
   const config = await readMdmdConfig(runtime)
   const output: ConfigOutput = {
     collection: resolveCollectionPathFromMdmdConfig(config) ?? null,
+    'ingest-dest': (typeof config['ingest-dest'] === 'string' ? config['ingest-dest'] : null),
+    'symlink-dir': (typeof config['symlink-dir'] === 'string' ? config['symlink-dir'] : null),
   }
 
   if (!includeResolved) {
@@ -57,7 +65,7 @@ export async function getConfigValue(
   key: SupportedConfigKey,
   resolved: boolean,
 ): Promise<string> {
-  if (resolved) {
+  if (resolved && key === 'collection') {
     return resolveCollectionRoot(undefined, runtime)
   }
 
@@ -72,24 +80,13 @@ export async function getConfigValue(
 
 export async function setConfigValue(runtime: MdmdRuntime, key: SupportedConfigKey, value: string): Promise<void> {
   const config = await readMdmdConfig(runtime)
-  const nextConfig: MdmdConfig = {...config}
-
-  if (key === 'collection') {
-    nextConfig.collection = value
-    delete nextConfig.collectionPath
-  }
-
+  const nextConfig: MdmdConfig = {...config, [key]: value}
   await writeMdmdConfig(nextConfig, runtime)
 }
 
 export async function unsetConfigValue(runtime: MdmdRuntime, key: SupportedConfigKey): Promise<void> {
   const config = await readMdmdConfig(runtime)
   const nextConfig: MdmdConfig = {...config}
-
-  if (key === 'collection') {
-    delete nextConfig.collection
-    delete nextConfig.collectionPath
-  }
-
+  delete nextConfig[key]
   await writeMdmdConfig(nextConfig, runtime)
 }

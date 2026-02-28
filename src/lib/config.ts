@@ -11,12 +11,14 @@ export const XDG_CONFIG_HOME_ENV_VAR = 'XDG_CONFIG_HOME'
 export const SYMLINK_DIR_DEFAULT = 'mdmd_notes'
 export const INGEST_DEST_DEFAULT = 'inbox'
 
+export const SUPPORTED_CONFIG_KEYS = ['collection', 'ingest-dest', 'symlink-dir'] as const
+export type SupportedConfigKey = (typeof SUPPORTED_CONFIG_KEYS)[number]
+
 export type MdmdConfig = {
   [key: string]: unknown
-  collection?: unknown
-  collectionPath?: unknown
-  'ingest-dest'?: unknown
-  'symlink-dir'?: unknown
+  collection?: string
+  'ingest-dest'?: string
+  'symlink-dir'?: string
 }
 
 export type MdmdRuntime = {
@@ -79,6 +81,7 @@ export async function readMdmdConfig(runtime: MdmdRuntime = createMdmdRuntime())
       throw new Error(`Invalid config at ${configPath}: expected an object`)
     }
 
+    validateMdmdConfig(parsed, configPath)
     return parsed as MdmdConfig
   } catch (error) {
     const maybeError = error as NodeJS.ErrnoException
@@ -136,13 +139,24 @@ export async function resolveCollectionRoot(
   )
 }
 
+function validateMdmdConfig(config: Record<string, unknown>, configPath: string): void {
+  const allowed = new Set<string>(SUPPORTED_CONFIG_KEYS)
+  for (const key of Object.keys(config)) {
+    if (!allowed.has(key)) {
+      throw new Error(
+        `Unknown config key '${key}' in ${configPath}. Valid keys: ${[...allowed].join(', ')}`,
+      )
+    }
+
+    if (config[key] !== undefined && typeof config[key] !== 'string') {
+      throw new Error(`Config key '${key}' must be a string in ${configPath}`)
+    }
+  }
+}
+
 function resolveCollectionPathFromConfig(config: MdmdConfig): string | undefined {
   if (typeof config.collection === 'string' && config.collection.trim().length > 0) {
     return config.collection
-  }
-
-  if (typeof config.collectionPath === 'string' && config.collectionPath.trim().length > 0) {
-    return config.collectionPath
   }
 
   return undefined

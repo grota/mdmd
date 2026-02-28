@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/grota/mdmd/main/config.schema.json",
+  "title": "mdmd config",
+  "description": "Configuration for the mdmd CLI. Located at $XDG_CONFIG_HOME/mdmd/config.yaml (default: ~/.config/mdmd/config.yaml). Override path via MDMD_CONFIG_PATH env var.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "collection": {
+      "type": "string",
+      "description": "Absolute path to the note collection root (e.g. Obsidian vault). Overridden by MDMD_COLLECTION_PATH env var or --collection flag."
+    },
+    "ingest-dest": {
+      "type": "string",
+      "description": "Collection-relative subdirectory where ingested notes are placed. Defaults to 'inbox'."
+    },
+    "symlink-dir": {
+      "type": "string",
+      "description": "Name of the symlink directory created inside each linked project directory. Defaults to 'mdmd_notes'."
+    }
+  }
+}

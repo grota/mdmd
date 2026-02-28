@@ -29,6 +29,6 @@ export default class ConfigSet extends Command {
     const runtime = createMdmdRuntime(this.config.configDir)
     await setConfigValue(runtime, args.key, args.value)
     this.log(`Set ${args.key}=${args.value}`)
-    return {[args.key]: args.value}
+    return {[args.key]: args.value} as unknown as ConfigSetOutput
   }
 }

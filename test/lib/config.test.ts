@@ -81,16 +81,6 @@ describe('collection path resolution', () => {
     expect(resolved).to.equal(path.resolve('/from-config'))
   })
 
-  it('supports legacy collectionPath key in mdmd config', async () => {
-    await setupConfigFixtures({
-      mdmdConfigYaml: 'collectionPath: /from-legacy-key\n',
-    })
-    delete process.env[COLLECTION_PATH_ENV_VAR]
-
-    const resolved = await resolveCollectionRoot()
-    expect(resolved).to.equal(path.resolve('/from-legacy-key'))
-  })
-
   it('falls back to active Obsidian vault when mdmd/env/flag are absent', async () => {
     await setupConfigFixtures({
       obsidianConfig: {
