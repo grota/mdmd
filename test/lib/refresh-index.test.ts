@@ -78,4 +78,57 @@ path: /tmp/project
     expect(fourthRun.deleted).to.equal(1)
     expect(fourthRun.scanned).to.equal(1)
   })
+
+  it('isolates index rows by collection root', async () => {
+    tempRoot = await mkdtemp(path.join(tmpdir(), 'mdmd-refresh-test-'))
+    const collectionA = path.join(tempRoot, 'collection-a')
+    const collectionB = path.join(tempRoot, 'collection-b')
+    const tempHome = path.join(tempRoot, 'home')
+    const indexDbPath = path.join(tempRoot, 'index.db')
+    const sharedMdmdId = '33333333-3333-4333-8333-333333333333'
+
+    await mkdir(collectionA, {recursive: true})
+    await mkdir(collectionB, {recursive: true})
+    await mkdir(tempHome, {recursive: true})
+    process.env.HOME = tempHome
+    process.env[INDEX_DB_PATH_ENV_VAR] = indexDbPath
+
+    await writeFile(
+      path.join(collectionA, 'shared.md'),
+      `---
+mdmd_id: ${sharedMdmdId}
+path: /tmp/a
+---
+# a
+`,
+      'utf8',
+    )
+    await writeFile(
+      path.join(collectionB, 'shared.md'),
+      `---
+mdmd_id: ${sharedMdmdId}
+path: /tmp/b
+---
+# b
+`,
+      'utf8',
+    )
+
+    await refreshIndex(collectionA)
+    await refreshIndex(collectionB)
+
+    const db = openIndexDb()
+    const rows = db.query(`
+      SELECT c.root AS root, n.path_in_collection AS pathInCollection, n.mdmd_id AS mdmdId
+      FROM index_notes n
+      INNER JOIN collections c ON c.collection_id = n.collection_id
+      ORDER BY c.root ASC
+    `).all() as Array<{mdmdId: string; pathInCollection: string; root: string}>
+    db.close()
+
+    expect(rows).to.deep.equal([
+      {mdmdId: sharedMdmdId, pathInCollection: 'shared.md', root: path.resolve(collectionA)},
+      {mdmdId: sharedMdmdId, pathInCollection: 'shared.md', root: path.resolve(collectionB)},
+    ])
+  })
 })

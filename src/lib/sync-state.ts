@@ -1,6 +1,6 @@
 import path from 'node:path'
 
-import {openIndexDb} from './index-db'
+import {openIndexDb, resolveCollectionId} from './index-db'
 
 export const NOTES_DIR_NAME = 'mdmd_notes'
 
@@ -10,17 +10,19 @@ export type DesiredSymlink = {
   targetPath: string
 }
 
-export function listManagedPathsForCwd(cwd: string): string[] {
-  const db = openIndexDb()
+export function listManagedPathsForCwd(cwd: string, collectionRoot: string): string[] {
+  const db = openIndexDb(collectionRoot)
 
   try {
+    const collectionId = resolveCollectionId(db, collectionRoot)
     const rows = db.query(`
         SELECT path_in_collection AS pathInCollection
         FROM index_notes
-        WHERE mdmd_id IS NOT NULL
-          AND json_extract(frontmatter, '$.path') = ?1
+        WHERE collection_id = ?1
+          AND mdmd_id IS NOT NULL
+          AND json_extract(frontmatter, '$.path') = ?2
         ORDER BY path_in_collection ASC
-      `).all(cwd) as Array<{pathInCollection: string}>
+      `).all(collectionId, cwd) as Array<{pathInCollection: string}>
 
     return rows.map((row) => row.pathInCollection)
   } finally {

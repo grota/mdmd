@@ -5,7 +5,7 @@ import {createInterface} from 'node:readline'
 
 import {createMdmdRuntime, resolveCollectionRoot} from '../lib/config'
 import {parseFrontmatter} from '../lib/frontmatter'
-import {deleteIndexNoteByPath, openIndexDb, toCollectionRelativePath} from '../lib/index-db'
+import {deleteIndexNoteByPath, openIndexDb, resolveCollectionId, toCollectionRelativePath} from '../lib/index-db'
 import {NOTES_DIR_NAME} from '../lib/sync-state'
 
 type ValidatedRemoval = {
@@ -67,11 +67,13 @@ export default class Remove extends Command {
       return
     }
 
-    const db = openIndexDb()
+    const db = openIndexDb(collectionRoot)
+    const collectionId = resolveCollectionId(db, collectionRoot)
     const prompt = flags.interactive ? createInterface({input: process.stdin, output: process.stdout}) : null
 
     try {
       await processRemovalEntries(validatedRemovals, 0, {
+        collectionId,
         cwd,
         db,
         log: (line) => this.log(line),
@@ -167,6 +169,7 @@ async function getLstatOrThrow(targetPath: string, errorMessage: string): Promis
 }
 
 type RemovalContext = {
+  collectionId: number
   cwd: string
   db: ReturnType<typeof openIndexDb>
   log: (line: string) => void
@@ -189,7 +192,7 @@ async function processRemovalEntries(entries: ValidatedRemoval[], index: number,
   }
 
   await unlink(entry.targetPath)
-  deleteIndexNoteByPath(context.db, entry.pathInCollection)
+  deleteIndexNoteByPath(context.db, context.collectionId, entry.pathInCollection)
   await unlink(entry.symlinkPath)
 
   context.log(`Deleted: ${entry.targetPath}`)

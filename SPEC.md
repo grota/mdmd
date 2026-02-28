@@ -111,15 +111,24 @@ Scans the entire collection and builds/updates an index of note metadata.
 **Schema:**
 
 ```sql
+CREATE TABLE collections (
+    collection_id       INTEGER PRIMARY KEY,
+    root                TEXT NOT NULL UNIQUE
+);
+
 CREATE TABLE index_notes (
-    path_in_collection TEXT NOT NULL PRIMARY KEY,  -- relative path within the collection
+    collection_id      INTEGER NOT NULL,           -- foreign key to collections(collection_id)
+    path_in_collection TEXT NOT NULL,              -- relative path within the collection
     mdmd_id            TEXT,                       -- UUID if managed, NULL otherwise
     mtime              INTEGER NOT NULL,           -- file mtime (epoch seconds)
     size               INTEGER NOT NULL,           -- file size in bytes
-    frontmatter        TEXT                        -- full frontmatter stored as JSON
+    frontmatter        TEXT,                       -- full frontmatter stored as JSON
+    PRIMARY KEY (collection_id, path_in_collection)
 );
 
-CREATE UNIQUE INDEX idx_notes_mdmd_id ON index_notes(mdmd_id) WHERE mdmd_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_notes_collection_mdmd_id
+ON index_notes(collection_id, mdmd_id)
+WHERE mdmd_id IS NOT NULL;
 ```
 
 **Querying frontmatter:**
@@ -136,8 +145,10 @@ built-in JSON functions are used for all queries:
 - **String matching for path** (since `path` is now a scalar string):
   ```sql
   -- Find all notes associated with a directory (used by sync)
-  SELECT * FROM index_notes
-  WHERE json_extract(frontmatter, '$.path') = '/home/grota/Projects/personal/obn';
+  SELECT n.* FROM index_notes n
+  INNER JOIN collections c ON c.collection_id = n.collection_id
+  WHERE c.root = '/path/to/collection'
+    AND json_extract(n.frontmatter, '$.path') = '/home/grota/Projects/personal/obn';
   ```
 
 - **List/array properties** (list, tags): use `json_each()` to search within arrays:
@@ -244,7 +255,9 @@ current directory.
 7. Delete the physical file from collection.
 8. Remove entry from SQLite index immediately:
    ```sql
-   DELETE FROM index_notes WHERE path_in_collection = ?
+   DELETE FROM index_notes
+   WHERE collection_id = ?
+     AND path_in_collection = ?
    ```
 9. Remove the symlink from `mdmd_notes/`.
 
@@ -413,9 +426,10 @@ None at this time.
   This enables future collection-wide search/filtering.
 - **Sync scope**: only managed notes (`mdmd_id` is not NULL) are eligible for sync.
 - **Index table name**: `index_notes` (clarifies it's an index, not the source data).
-- **Primary key**: `path_in_collection` serves as the primary key. When files are
-  moved within the collection, the old row is deleted and a new row is inserted.
-  Note identity is preserved via `mdmd_id` in frontmatter.
+- **Primary key**: `(collection_id, path_in_collection)` serves as the primary key.
+  When files are moved within the collection, the old row is deleted and a new row
+  is inserted for that collection. Note identity is preserved via `mdmd_id`
+  in frontmatter.
 - **Symlink directory**: `mdmd_notes/` (visible, not dot-prefixed). Configurable.
 - **Index format**: SQLite. Frontmatter stored as JSON column, queried via
   SQLite's native `json_extract()` and `json_each()`. No denormalized tables

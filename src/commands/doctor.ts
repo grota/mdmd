@@ -4,7 +4,7 @@ import path from 'node:path'
 
 import {createMdmdRuntime, resolveCollectionRoot} from '../lib/config'
 import {ensureGitExcludeEntry, hasGitExcludeEntry} from '../lib/git'
-import {openIndexDb} from '../lib/index-db'
+import {openIndexDb, resolveCollectionId} from '../lib/index-db'
 import {refreshIndex, scanCollectionMarkdownFiles} from '../lib/refresh-index'
 import {ensureSymlinkTarget} from '../lib/symlink'
 import {buildDesiredSymlinks, listManagedPathsForCwd, NOTES_DIR_NAME} from '../lib/sync-state'
@@ -144,15 +144,17 @@ async function collectIndexIssues(collectionRoot: string): Promise<DoctorIssue[]
   const snapshots = await scanCollectionMarkdownFiles(collectionRoot)
   const filePathSet = new Set(snapshots.map((snapshot) => snapshot.pathInCollection))
 
-  const db = openIndexDb()
+  const db = openIndexDb(collectionRoot)
   try {
+    const collectionId = resolveCollectionId(db, collectionRoot)
     const rows = db.query(`
         SELECT path_in_collection AS pathInCollection,
                mdmd_id AS mdmdId,
                frontmatter AS frontmatterJson
         FROM index_notes
+        WHERE collection_id = ?1
         ORDER BY path_in_collection ASC
-      `).all() as IndexedRow[]
+      `).all(collectionId) as IndexedRow[]
 
     const rowPathSet = new Set(rows.map((row) => row.pathInCollection))
 
@@ -281,7 +283,7 @@ function collectManagedMetadataIssues(rows: IndexedRow[]): DoctorIssue[] {
 
 async function collectSymlinkIssues(cwd: string, collectionRoot: string): Promise<DoctorIssue[]> {
   const issues: DoctorIssue[] = []
-  const managedPaths = listManagedPathsForCwd(cwd)
+  const managedPaths = listManagedPathsForCwd(cwd, collectionRoot)
   const desiredSymlinks = buildDesiredSymlinks(collectionRoot, managedPaths)
   const desiredByName = new Map(desiredSymlinks.map((entry) => [entry.symlinkName, entry.targetPath]))
   const workingNotesDir = path.join(cwd, NOTES_DIR_NAME)
@@ -414,7 +416,7 @@ async function applyDoctorFixes(
 }
 
 async function applySymlinkFixes(cwd: string, collectionRoot: string): Promise<{ensured: number; removed: number}> {
-  const managedPaths = listManagedPathsForCwd(cwd)
+  const managedPaths = listManagedPathsForCwd(cwd, collectionRoot)
   const desiredSymlinks = buildDesiredSymlinks(collectionRoot, managedPaths)
   const desiredByName = new Map(desiredSymlinks.map((entry) => [entry.symlinkName, entry.targetPath]))
   const workingNotesDir = path.join(cwd, NOTES_DIR_NAME)

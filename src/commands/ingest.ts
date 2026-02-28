@@ -7,7 +7,7 @@ import path from 'node:path'
 import {createMdmdRuntime, resolveCollectionRoot} from '../lib/config'
 import {parseFrontmatter, stringifyFrontmatter} from '../lib/frontmatter'
 import {ensureGitExcludeEntry, resolveGitHeadSha} from '../lib/git'
-import {findPathByMdmdId, openIndexDb, toCollectionRelativePath, upsertIndexNote} from '../lib/index-db'
+import {findPathByMdmdId, openIndexDb, resolveCollectionId, toCollectionRelativePath, upsertIndexNote} from '../lib/index-db'
 import {refreshIndex} from '../lib/refresh-index'
 import {ensureSymlinkTarget} from '../lib/symlink'
 import {NOTES_DIR_NAME} from '../lib/sync-state'
@@ -78,9 +78,10 @@ export default class Ingest extends Command {
       await refreshIndex(collectionRoot)
     }
 
-    const db = openIndexDb()
+    const db = openIndexDb(collectionRoot)
     try {
-      const existingPath = findPathByMdmdId(db, mdmdId)
+      const collectionId = resolveCollectionId(db, collectionRoot)
+      const existingPath = findPathByMdmdId(db, collectionId, mdmdId)
       if (existingPath) {
         this.error(
           `A note with id ${mdmdId} already exists in the collection at ${existingPath}. Use \`mdmd sync\` instead.`,
@@ -118,7 +119,7 @@ export default class Ingest extends Command {
 
       const fileStat = await stat(destinationPath)
       const pathInCollection = toCollectionRelativePath(collectionRoot, destinationPath)
-      upsertIndexNote(db, {
+      upsertIndexNote(db, collectionId, {
         frontmatter: nextFrontmatter,
         mdmdId,
         mtime: Math.floor(fileStat.mtimeMs / 1000),

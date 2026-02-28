@@ -8,6 +8,7 @@ import {
   type IndexNote,
   listIndexedFileStats,
   openIndexDb,
+  resolveCollectionId,
   toCollectionRelativePath,
   upsertIndexNote,
 } from './index-db'
@@ -33,9 +34,10 @@ export async function refreshIndex(collectionRoot: string): Promise<RefreshIndex
   const collectionFiles = await scanCollectionMarkdownFiles(resolvedCollectionRoot)
   const collectionFilesByPath = new Map(collectionFiles.map((file) => [file.pathInCollection, file]))
 
-  const db = openIndexDb()
+  const db = openIndexDb(resolvedCollectionRoot)
   try {
-    const indexedFiles = listIndexedFileStats(db)
+    const collectionId = resolveCollectionId(db, resolvedCollectionRoot)
+    const indexedFiles = listIndexedFileStats(db, collectionId)
     const indexedFilesByPath = new Map(indexedFiles.map((file) => [file.pathInCollection, file]))
 
     const pathsToDelete = indexedFiles
@@ -50,11 +52,11 @@ export async function refreshIndex(collectionRoot: string): Promise<RefreshIndex
 
     const transaction = db.transaction((paths: string[], notes: IndexNote[]) => {
       for (const pathInCollection of paths) {
-        deleteIndexNoteByPath(db, pathInCollection)
+        deleteIndexNoteByPath(db, collectionId, pathInCollection)
       }
 
       for (const note of notes) {
-        upsertIndexNote(db, note)
+        upsertIndexNote(db, collectionId, note)
       }
     })
 

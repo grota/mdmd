@@ -30,7 +30,7 @@ static override flags = {
     await assertExistingDirectory(collectionRoot, `Collection path does not exist: ${collectionRoot}`)
 
     const refreshResult = await refreshIndex(collectionRoot)
-    const managedPaths = listManagedPathsForCwd(cwd)
+    const managedPaths = listManagedPathsForCwd(cwd, collectionRoot)
     const desiredSymlinks = buildDesiredSymlinks(collectionRoot, managedPaths)
     const desiredByName = new Map(desiredSymlinks.map((entry) => [entry.symlinkName, entry.targetPath]))
 
