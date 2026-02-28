@@ -55,7 +55,7 @@ created_at: 2020-01-01T00:00:00.000Z
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).to.equal(0)
 
-    const destinationFile = path.join(collectionDir, 'mdmd_notes', 'note.md')
+    const destinationFile = path.join(collectionDir, 'inbox', 'note.md')
     const symlinkFile = path.join(workDir, 'mdmd_notes', 'note.md')
 
     await expectPathExists(destinationFile)
@@ -72,7 +72,7 @@ created_at: 2020-01-01T00:00:00.000Z
 
     expect(frontmatter.title).to.equal('Existing title')
     expect(frontmatter.created_at).to.equal('2020-01-01T00:00:00.000Z')
-    expect(frontmatter.path).to.equal(workDir)
+    expect(frontmatter.paths).to.deep.equal([workDir])
     expect(frontmatter.mdmd_id).to.be.a('string')
     expect(UUID_V4_PATTERN.test(String(frontmatter.mdmd_id))).to.equal(true)
 
@@ -80,12 +80,12 @@ created_at: 2020-01-01T00:00:00.000Z
     const row = db.query(`
       SELECT path_in_collection, mdmd_id
       FROM index_notes
-      WHERE path_in_collection = 'mdmd_notes/note.md'
+      WHERE path_in_collection = 'inbox/note.md'
     `).get() as null | {mdmd_id: string; path_in_collection: string;}
     db.close()
 
     expect(row).to.not.equal(null)
-    expect(row?.path_in_collection).to.equal('mdmd_notes/note.md')
+    expect(row?.path_in_collection).to.equal('inbox/note.md')
     expect(row?.mdmd_id).to.equal(frontmatter.mdmd_id)
   })
 
@@ -110,8 +110,8 @@ created_at: 2020-01-01T00:00:00.000Z
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).to.equal(0)
 
-    await expectPathExists(path.join(collectionDir, 'mdmd_notes', 'note-a.md'))
-    await expectPathExists(path.join(collectionDir, 'mdmd_notes', 'note-b.md'))
+    await expectPathExists(path.join(collectionDir, 'inbox', 'note-a.md'))
+    await expectPathExists(path.join(collectionDir, 'inbox', 'note-b.md'))
     await expectPathExists(path.join(workDir, 'mdmd_notes', 'note-a.md'))
     await expectPathExists(path.join(workDir, 'mdmd_notes', 'note-b.md'))
     await expectPathMissing(path.join(workDir, 'note-a.md'))
@@ -121,7 +121,7 @@ created_at: 2020-01-01T00:00:00.000Z
     const rowCount = db.query(`
       SELECT COUNT(*) AS count
       FROM index_notes
-      WHERE path_in_collection IN ('mdmd_notes/note-a.md', 'mdmd_notes/note-b.md')
+      WHERE path_in_collection IN ('inbox/note-a.md', 'inbox/note-b.md')
     `).get() as {count: number}
     db.close()
 
@@ -135,10 +135,10 @@ created_at: 2020-01-01T00:00:00.000Z
     const homeDir = path.join(tempRoot, 'home')
     const indexDbPath = path.join(tempRoot, 'index.db')
     await mkdir(workDir, {recursive: true})
-    await mkdir(path.join(collectionDir, 'mdmd_notes'), {recursive: true})
+    await mkdir(path.join(collectionDir, 'inbox'), {recursive: true})
     await mkdir(homeDir, {recursive: true})
 
-    await writeFile(path.join(collectionDir, 'mdmd_notes', 'note.md'), '# existing\n', 'utf8')
+    await writeFile(path.join(collectionDir, 'inbox', 'note.md'), '# existing\n', 'utf8')
     await writeFile(path.join(workDir, 'note.md'), '# to ingest\n', 'utf8')
 
     const result = spawnSync('bun', [cliEntrypoint, 'ingest', 'note.md', '--collection', collectionDir], {
@@ -148,7 +148,7 @@ created_at: 2020-01-01T00:00:00.000Z
     })
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).to.equal(0)
-    await expectPathExists(path.join(collectionDir, 'mdmd_notes', 'note_2.md'))
+    await expectPathExists(path.join(collectionDir, 'inbox', 'note_2.md'))
     await expectPathExists(path.join(workDir, 'mdmd_notes', 'note_2.md'))
   })
 
@@ -197,7 +197,7 @@ mdmd_id: ${existingMdmdId}
     })
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).to.equal(0)
-    await expectPathExists(path.join(collectionDir, 'mdmd_notes', 'note.md'))
+    await expectPathExists(path.join(collectionDir, 'inbox', 'note.md'))
 
     const db = new Database(indexDbPath)
     const staleCount = db.query(`
@@ -208,7 +208,7 @@ mdmd_id: ${existingMdmdId}
     const ingestedCount = db.query(`
       SELECT COUNT(*) AS count
       FROM index_notes
-      WHERE path_in_collection = 'mdmd_notes/note.md' AND mdmd_id = ?1;
+      WHERE path_in_collection = 'inbox/note.md' AND mdmd_id = ?1;
     `).get(existingMdmdId) as {count: number}
     db.close()
 

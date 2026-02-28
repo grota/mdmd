@@ -1,7 +1,7 @@
 import {Database} from 'bun:sqlite'
 import {expect} from 'chai'
 import {spawnSync} from 'node:child_process'
-import {access, mkdir, mkdtemp, rm, symlink, writeFile} from 'node:fs/promises'
+import {access, mkdir, mkdtemp, readFile, rm, symlink, writeFile} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import path from 'node:path'
 import {fileURLToPath} from 'node:url'
@@ -42,14 +42,14 @@ describe('mdmd remove command', () => {
     )
     expect(removeResult.status, `${removeResult.stdout}\n${removeResult.stderr}`).to.equal(0)
 
-    await expectPathMissing(path.join(collectionDir, 'mdmd_notes', 'note.md'))
+    await expectPathMissing(path.join(collectionDir, 'inbox', 'note.md'))
     await expectPathMissing(path.join(workDir, 'mdmd_notes', 'note.md'))
 
     const db = new Database(indexDbPath)
     const remaining = db.query(`
       SELECT COUNT(*) AS count
       FROM index_notes
-      WHERE path_in_collection = 'mdmd_notes/note.md'
+      WHERE path_in_collection = 'inbox/note.md'
     `).get() as {count: number}
     db.close()
 
@@ -73,7 +73,7 @@ describe('mdmd remove command', () => {
     expect(dryRunResult.status, `${dryRunResult.stdout}\n${dryRunResult.stderr}`).to.equal(0)
     expect(dryRunResult.stdout).to.contain('Would delete:')
 
-    await expectPathExists(path.join(collectionDir, 'mdmd_notes', 'note.md'))
+    await expectPathExists(path.join(collectionDir, 'inbox', 'note.md'))
     await expectPathExists(path.join(workDir, 'mdmd_notes', 'note.md'))
   })
 
@@ -91,7 +91,7 @@ describe('mdmd remove command', () => {
       {
         // eslint-disable-next-line camelcase
         mdmd_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-        path: workDir,
+        paths: [workDir],
       },
       '# valid\n',
     )
@@ -100,7 +100,7 @@ describe('mdmd remove command', () => {
       {
         // eslint-disable-next-line camelcase
         mdmd_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-        path: '/tmp/not-this-cwd',
+        paths: ['/tmp/not-this-cwd'],
       },
       '# mismatch\n',
     )
@@ -123,6 +123,47 @@ describe('mdmd remove command', () => {
     await expectPathExists(mismatchPath)
     await expectPathExists(path.join(workingNotesDir, 'valid.md'))
     await expectPathExists(path.join(workingNotesDir, 'mismatch.md'))
+  })
+
+  it('aborts if note is linked from other directories without --force, succeeds with --force', async () => {
+    tempRoot = await mkdtemp(path.join(tmpdir(), 'mdmd-remove-test-'))
+    const {collectionDir, homeDir, indexDbPath, workDir} = await setupDirs(tempRoot)
+    await writeFile(path.join(workDir, 'note.md'), '# shared\n', 'utf8')
+
+    const ingestResult = runCli(['ingest', 'note.md', '--collection', collectionDir], workDir, homeDir, indexDbPath)
+    expect(ingestResult.status, `${ingestResult.stdout}\n${ingestResult.stderr}`).to.equal(0)
+
+    // Manually add a second path to the frontmatter to simulate a multi-dir note
+    const collectionFile = path.join(collectionDir, 'inbox', 'note.md')
+    const {parseFrontmatter, stringifyFrontmatter} = await import('../../src/lib/frontmatter')
+    const noteContents = await readFile(collectionFile, 'utf8')
+    const {body, frontmatter} = parseFrontmatter(noteContents)
+    const updatedFrontmatter = {...frontmatter, paths: [...(frontmatter.paths as string[]), '/tmp/other-dir']}
+    await writeFile(collectionFile, stringifyFrontmatter(updatedFrontmatter, body), 'utf8')
+
+    // Remove without --force should fail
+    const removeResult = runCli(
+      ['remove', 'mdmd_notes/note.md', '--collection', collectionDir],
+      workDir,
+      homeDir,
+      indexDbPath,
+    )
+    expect(removeResult.status).to.not.equal(0)
+    expect(removeResult.stderr).to.contain('also linked from')
+
+    await expectPathExists(collectionFile)
+    await expectPathExists(path.join(workDir, 'mdmd_notes', 'note.md'))
+
+    // Remove with --force should succeed
+    const forceResult = runCli(
+      ['remove', '--force', 'mdmd_notes/note.md', '--collection', collectionDir],
+      workDir,
+      homeDir,
+      indexDbPath,
+    )
+    expect(forceResult.status, `${forceResult.stdout}\n${forceResult.stderr}`).to.equal(0)
+    await expectPathMissing(collectionFile)
+    await expectPathMissing(path.join(workDir, 'mdmd_notes', 'note.md'))
   })
 })
 

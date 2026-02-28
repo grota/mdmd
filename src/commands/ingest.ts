@@ -4,37 +4,41 @@ import {constants as fsConstants} from 'node:fs'
 import {access, lstat, mkdir, readdir, readFile, stat, unlink, writeFile} from 'node:fs/promises'
 import path from 'node:path'
 
-import {createMdmdRuntime, resolveCollectionRoot} from '../lib/config'
+import {createMdmdRuntime, readMdmdConfig, resolveCollectionRoot, resolveIngestDest, resolveSymlinkDir} from '../lib/config'
 import {parseFrontmatter, stringifyFrontmatter} from '../lib/frontmatter'
 import {ensureGitExcludeEntry, resolveGitHeadSha} from '../lib/git'
 import {findPathByMdmdId, openIndexDb, resolveCollectionId, toCollectionRelativePath, upsertIndexNote} from '../lib/index-db'
 import {refreshIndex} from '../lib/refresh-index'
 import {ensureSymlinkTarget} from '../lib/symlink'
-import {NOTES_DIR_NAME} from '../lib/sync-state'
 
-const ISO_8601_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/
+const ISO_8601_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?$/
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 type IngestContext = {
   collectionRoot: string
   cwd: string
+  ingestDest: string
+  symlinkDir: string
 }
 
 export default class Ingest extends Command {
   static override args = {
     file: Args.string({description: 'Path to an existing markdown file', required: true}),
   }
-  static override description = 'Ingest markdown file(s) into the collection and recreate them as symlinks'
+  static override description = 'Ingest markdown file(s) into the collection and link them to the current directory'
   static override examples = [
     '<%= config.bin %> <%= command.id %> ./notes/todo.md',
     '<%= config.bin %> <%= command.id %> ./notes/todo.md ./notes/ideas.md',
-    '<%= config.bin %> <%= command.id %> ./notes/todo.md --collection "/path/to/vault"',
+    '<%= config.bin %> <%= command.id %> ./notes/todo.md --dest Projects/work',
   ]
   static override flags = {
     collection: Flags.directory({
       char: 'c',
       description: 'Collection root path (highest priority over env/config defaults)',
       exists: true,
+    }),
+    dest: Flags.string({
+      description: 'Collection-relative subdirectory to place the ingested file (overrides ingest-dest config)',
     }),
   }
   static override strict = false
@@ -46,9 +50,16 @@ export default class Ingest extends Command {
     const collectionRoot = await resolveCollectionRoot(flags.collection, runtime)
     await assertExistingDirectory(collectionRoot, `Collection path does not exist: ${collectionRoot}`)
 
+    // refresh index first so duplicate-id lookups are based on current collection state
+    await refreshIndex(collectionRoot)
+
+    const mdmdConfig = await readMdmdConfig(runtime)
+    const ingestDest = resolveIngestDest(mdmdConfig, flags.dest)
+    const symlinkDir = resolveSymlinkDir(mdmdConfig)
+
     const fileArgs = argv.length > 0 ? argv.map(String) : [args.file]
     const sourcePaths = fileArgs.map((filePath) => path.resolve(cwd, filePath))
-    const context: IngestContext = {collectionRoot, cwd}
+    const context: IngestContext = {collectionRoot, cwd, ingestDest, symlinkDir}
     for (const sourcePath of sourcePaths) {
       // eslint-disable-next-line no-await-in-loop
       await this.ingestSingleFile(sourcePath, context)
@@ -56,12 +67,12 @@ export default class Ingest extends Command {
   }
 
   private async ingestSingleFile(sourcePath: string, context: IngestContext): Promise<void> {
-    const {collectionRoot, cwd} = context
+    const {collectionRoot, cwd, ingestDest, symlinkDir} = context
     await assertMarkdownFile(sourcePath)
 
     if (isPathInsideRoot(sourcePath, collectionRoot)) {
       this.error(
-        `File is already in the collection (${sourcePath}). Use \`mdmd sync\` instead.`,
+        `File is already in the collection (${sourcePath}). Use \`mdmd link\` instead.`,
         {exit: 1},
       )
     }
@@ -72,25 +83,22 @@ export default class Ingest extends Command {
     const hasExistingMdmdId = rawMdmdId !== undefined && rawMdmdId !== null && rawMdmdId !== ''
     const mdmdId = hasExistingMdmdId ? validateAndReturnExistingMdmdId(rawMdmdId) : randomUUID()
 
-    if (hasExistingMdmdId) {
-      // If the source already carries mdmd_id, refresh first so duplicate-id lookup
-      // is based on current collection state (not potentially stale index rows).
-      await refreshIndex(collectionRoot)
-    }
-
     const db = openIndexDb(collectionRoot)
     try {
       const collectionId = resolveCollectionId(db, collectionRoot)
       const existingPath = findPathByMdmdId(db, collectionId, mdmdId)
       if (existingPath) {
         this.error(
-          `A note with id ${mdmdId} already exists in the collection at ${existingPath}. Use \`mdmd sync\` instead.`,
+          `A note with id ${mdmdId} already exists in the collection at ${existingPath}. Use \`mdmd link\` instead.`,
           {exit: 1},
         )
       }
 
       const now = new Date().toISOString()
-      const gitSha = resolveGitHeadSha(cwd)
+
+      // Build updated paths array: preserve existing paths, append cwd if not already there
+      const existingPaths = Array.isArray(existingFrontmatter.paths) ? existingFrontmatter.paths as string[] : []
+      const nextPaths = existingPaths.includes(cwd) ? existingPaths : [...existingPaths, cwd]
 
       const nextFrontmatter: Record<string, unknown> = {
         ...existingFrontmatter,
@@ -98,18 +106,22 @@ export default class Ingest extends Command {
         created_at: resolveCreatedAt(existingFrontmatter.created_at, now),
         // eslint-disable-next-line camelcase
         mdmd_id: mdmdId,
-        path: cwd,
+        paths: nextPaths,
       }
 
-      if (gitSha) {
-        // eslint-disable-next-line camelcase
-        nextFrontmatter.git_sha = gitSha
-      } else {
-        // remove stale git_sha carried over from existing frontmatter when cwd is not a git repo
-        delete nextFrontmatter.git_sha
+      // Stamp git_sha only if not already present
+      if (!nextFrontmatter.git_sha) {
+        const gitSha = resolveGitHeadSha(cwd)
+        if (gitSha) {
+          // eslint-disable-next-line camelcase
+          nextFrontmatter.git_sha = gitSha
+        }
       }
 
-      const collectionNotesDir = path.join(collectionRoot, NOTES_DIR_NAME)
+      // Remove legacy scalar 'path' property if present
+      delete nextFrontmatter.path
+
+      const collectionNotesDir = path.join(collectionRoot, ingestDest)
       await mkdir(collectionNotesDir, {recursive: true})
       const destinationName = await findAvailableFilename(collectionNotesDir, path.basename(sourcePath))
       const destinationPath = path.join(collectionNotesDir, destinationName)
@@ -127,12 +139,12 @@ export default class Ingest extends Command {
         size: fileStat.size,
       })
 
-      const workingNotesDir = path.join(cwd, NOTES_DIR_NAME)
+      const workingNotesDir = path.join(cwd, symlinkDir)
       await mkdir(workingNotesDir, {recursive: true})
       const symlinkPath = path.join(workingNotesDir, destinationName)
       await ensureSymlinkTarget(symlinkPath, destinationPath)
 
-      await ensureGitExcludeEntry(cwd, `${NOTES_DIR_NAME}/`)
+      await ensureGitExcludeEntry(cwd, `${symlinkDir}/`)
 
       this.log(`Ingested ${sourcePath} -> ${destinationPath}`)
       this.log(`Symlinked ${path.relative(cwd, symlinkPath)} -> ${destinationPath}`)

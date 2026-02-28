@@ -44,17 +44,17 @@ describe('mdmd sync command', () => {
       {
         // eslint-disable-next-line camelcase
         mdmd_id: '11111111-1111-4111-8111-111111111111',
-        path: workDir,
+        paths: [workDir],
       },
       '# managed\n',
     )
-    await writeMarkdownNote(unmanagedNotePath, {path: workDir}, '# unmanaged\n')
+    await writeMarkdownNote(unmanagedNotePath, {}, '# unmanaged\n')
     await writeMarkdownNote(
       foreignNotePath,
       {
         // eslint-disable-next-line camelcase
         mdmd_id: '22222222-2222-4222-8222-222222222222',
-        path: '/tmp/elsewhere',
+        paths: ['/tmp/elsewhere'],
       },
       '# foreign\n',
     )
@@ -97,7 +97,7 @@ describe('mdmd sync command', () => {
       {
         // eslint-disable-next-line camelcase
         mdmd_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-        path: workDir,
+        paths: [workDir],
       },
       '# alpha\n',
     )
@@ -106,7 +106,7 @@ describe('mdmd sync command', () => {
       {
         // eslint-disable-next-line camelcase
         mdmd_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-        path: workDir,
+        paths: [workDir],
       },
       '# beta\n',
     )

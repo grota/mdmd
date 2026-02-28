@@ -3,12 +3,13 @@ import {lstat, readFile, readlink, unlink} from 'node:fs/promises'
 import path from 'node:path'
 import {createInterface} from 'node:readline'
 
-import {createMdmdRuntime, resolveCollectionRoot} from '../lib/config'
+import {createMdmdRuntime, readMdmdConfig, resolveCollectionRoot, resolveSymlinkDir} from '../lib/config'
 import {parseFrontmatter} from '../lib/frontmatter'
 import {deleteIndexNoteByPath, openIndexDb, resolveCollectionId, toCollectionRelativePath} from '../lib/index-db'
-import {NOTES_DIR_NAME} from '../lib/sync-state'
+import {refreshIndex} from '../lib/refresh-index'
 
 type ValidatedRemoval = {
+  otherPaths: string[]
   pathInCollection: string
   symlinkPath: string
   targetPath: string
@@ -17,7 +18,7 @@ type ValidatedRemoval = {
 export default class Remove extends Command {
   static override args = {
     symlink: Args.file({
-      description: `Symlink path in ${NOTES_DIR_NAME}/ to remove from the collection`,
+      description: 'Symlink path in the symlink directory to remove from the collection',
       exists: true,
       required: true,
     }),
@@ -27,6 +28,7 @@ export default class Remove extends Command {
     '<%= config.bin %> <%= command.id %> mdmd_notes/note.md',
     '<%= config.bin %> <%= command.id %> mdmd_notes/note.md mdmd_notes/other.md',
     '<%= config.bin %> <%= command.id %> --dry-run mdmd_notes/note.md',
+    '<%= config.bin %> <%= command.id %> --force mdmd_notes/shared.md',
   ]
   static override flags = {
     collection: Flags.directory({
@@ -36,6 +38,9 @@ export default class Remove extends Command {
     }),
     'dry-run': Flags.boolean({
       description: 'Show what would be deleted without deleting anything',
+    }),
+    force: Flags.boolean({
+      description: 'Delete even if the note is still linked from other directories',
     }),
     interactive: Flags.boolean({
       char: 'i',
@@ -51,10 +56,15 @@ export default class Remove extends Command {
     const collectionRoot = await resolveCollectionRoot(flags.collection, runtime)
     await assertExistingDirectory(collectionRoot, `Collection path does not exist: ${collectionRoot}`)
 
+    const mdmdConfig = await readMdmdConfig(runtime)
+    const symlinkDir = resolveSymlinkDir(mdmdConfig)
+
+    await refreshIndex(collectionRoot)
+
     const symlinkArgs = argv.map(String)
 
     const validatedRemovals = await Promise.all(
-      symlinkArgs.map(async (symlinkArg) => this.validateRemovalInput(cwd, collectionRoot, symlinkArg)),
+      symlinkArgs.map(async (symlinkArg) => this.validateRemovalInput(cwd, collectionRoot, symlinkArg, symlinkDir, flags.force ?? false)),
     )
 
     if (flags['dry-run']) {
@@ -62,6 +72,9 @@ export default class Remove extends Command {
         this.log(`Would delete: ${entry.targetPath}`)
         this.log(`Would remove from index: path_in_collection='${entry.pathInCollection}'`)
         this.log(`Would remove symlink: ${path.relative(cwd, entry.symlinkPath)}`)
+        if (entry.otherPaths.length > 0) {
+          this.log(`  Note: also linked from: ${entry.otherPaths.join(', ')}`)
+        }
       }
 
       return
@@ -89,10 +102,12 @@ export default class Remove extends Command {
     cwd: string,
     collectionRoot: string,
     symlinkArg: string,
+    symlinkDir: string,
+    force: boolean,
   ): Promise<ValidatedRemoval> {
-    const workingNotesDir = path.join(cwd, NOTES_DIR_NAME)
+    const workingNotesDir = path.join(cwd, symlinkDir)
     const symlinkPath = path.resolve(cwd, symlinkArg)
-    assertPathInDirectory(workingNotesDir, symlinkPath, `Symlink must be in ${NOTES_DIR_NAME}/: ${symlinkArg}`)
+    assertPathInDirectory(workingNotesDir, symlinkPath, `Symlink must be in ${symlinkDir}/: ${symlinkArg}`)
 
     const symlinkStat = await getLstatOrThrow(symlinkPath, `Symlink does not exist: ${symlinkArg}`)
     if (!symlinkStat.isSymbolicLink()) {
@@ -111,13 +126,29 @@ export default class Remove extends Command {
 
     const targetContents = await readFile(targetPath, 'utf8')
     const {frontmatter} = parseFrontmatter(targetContents)
-    const notePath = frontmatter.path
-    if (typeof notePath !== 'string' || notePath.trim().length === 0) {
-      throw new Error(`Note has no path property in frontmatter: ${targetPath}`)
+
+    // Support both legacy scalar 'path' and new 'paths' array
+    let notePaths: string[] = []
+    if (Array.isArray(frontmatter.paths)) {
+      notePaths = frontmatter.paths as string[]
+    } else if (typeof frontmatter.path === 'string' && frontmatter.path.trim().length > 0) {
+      notePaths = [frontmatter.path]
     }
 
-    if (notePath !== cwd) {
-      throw new Error(`metadata mismatch: note claims to belong to ${notePath} but symlink is in ${cwd}`)
+    if (notePaths.length === 0) {
+      throw new Error(`Note has no paths property in frontmatter: ${targetPath}`)
+    }
+
+    if (!notePaths.includes(cwd)) {
+      throw new Error(`metadata mismatch: note is not associated with ${cwd} (paths: ${notePaths.join(', ')})`)
+    }
+
+    const otherPaths = notePaths.filter((p) => p !== cwd)
+    if (otherPaths.length > 0 && !force) {
+      const basename = path.basename(targetPath)
+      throw new Error(
+        `${basename} is also linked from: ${otherPaths.join(', ')}. Use --force to delete anyway.`,
+      )
     }
 
     if (!frontmatter.mdmd_id) {
@@ -125,6 +156,7 @@ export default class Remove extends Command {
     }
 
     return {
+      otherPaths,
       pathInCollection,
       symlinkPath,
       targetPath,

@@ -41,7 +41,8 @@ describe('refreshIndex', () => {
       path.join(nestedDir, 'one.md'),
       `---
 mdmd_id: 11111111-1111-4111-8111-111111111111
-path: /tmp/project
+paths:
+  - /tmp/project
 ---
 # one
 `,
@@ -97,7 +98,8 @@ path: /tmp/project
       path.join(collectionA, 'shared.md'),
       `---
 mdmd_id: ${sharedMdmdId}
-path: /tmp/a
+paths:
+  - /tmp/a
 ---
 # a
 `,
@@ -107,7 +109,8 @@ path: /tmp/a
       path.join(collectionB, 'shared.md'),
       `---
 mdmd_id: ${sharedMdmdId}
-path: /tmp/b
+paths:
+  - /tmp/b
 ---
 # b
 `,

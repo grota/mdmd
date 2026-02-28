@@ -2,12 +2,12 @@ import {Command, Flags} from '@oclif/core'
 import {lstat, mkdir, readdir, readlink, unlink} from 'node:fs/promises'
 import path from 'node:path'
 
-import {createMdmdRuntime, resolveCollectionRoot} from '../lib/config'
+import {createMdmdRuntime, readMdmdConfig, resolveCollectionRoot, resolveSymlinkDir} from '../lib/config'
 import {ensureGitExcludeEntry, hasGitExcludeEntry} from '../lib/git'
 import {openIndexDb, resolveCollectionId} from '../lib/index-db'
 import {refreshIndex, scanCollectionMarkdownFiles} from '../lib/refresh-index'
 import {ensureSymlinkTarget} from '../lib/symlink'
-import {buildDesiredSymlinks, listManagedPathsForCwd, NOTES_DIR_NAME} from '../lib/sync-state'
+import {buildDesiredSymlinks, listManagedPathsForCwd} from '../lib/sync-state'
 
 type DoctorScope = 'config' | 'index' | 'symlinks'
 
@@ -62,14 +62,16 @@ export default class Doctor extends Command {
 
     try {
       const collectionRoot = await resolveCollectionRoot(flags.collection, runtime)
+      const mdmdConfig = await readMdmdConfig(runtime)
+      const symlinkDir = resolveSymlinkDir(mdmdConfig)
       const scopes = resolveScopes(flags.scope)
 
-      let issues = await collectDoctorIssues(cwd, collectionRoot, scopes)
+      let issues = await collectDoctorIssues(cwd, collectionRoot, scopes, symlinkDir)
       let fixesApplied: string[] = []
 
       if (flags.fix) {
-        fixesApplied = await applyDoctorFixes(cwd, collectionRoot, scopes, issues)
-        issues = await collectDoctorIssues(cwd, collectionRoot, scopes)
+        fixesApplied = await applyDoctorFixes(cwd, collectionRoot, scopes, issues, symlinkDir)
+        issues = await collectDoctorIssues(cwd, collectionRoot, scopes, symlinkDir)
       }
 
       const report: DoctorReport = {
@@ -100,7 +102,7 @@ function resolveScopes(scopeFlag: string): Set<DoctorScope> {
   return new Set<DoctorScope>([scopeFlag as DoctorScope])
 }
 
-async function collectDoctorIssues(cwd: string, collectionRoot: string, scopes: Set<DoctorScope>): Promise<DoctorIssue[]> {
+async function collectDoctorIssues(cwd: string, collectionRoot: string, scopes: Set<DoctorScope>, symlinkDir: string): Promise<DoctorIssue[]> {
   const issues: DoctorIssue[] = []
   const collectionExists = await directoryExists(collectionRoot)
 
@@ -115,11 +117,11 @@ async function collectDoctorIssues(cwd: string, collectionRoot: string, scopes: 
       })
     }
 
-    const gitExcludePresent = await hasGitExcludeEntry(cwd, `${NOTES_DIR_NAME}/`)
+    const gitExcludePresent = await hasGitExcludeEntry(cwd, `${symlinkDir}/`)
     if (gitExcludePresent === false) {
       issues.push({
         code: 'config.git_exclude_missing',
-        message: `Missing ${NOTES_DIR_NAME}/ entry in .git/info/exclude`,
+        message: `Missing ${symlinkDir}/ entry in .git/info/exclude`,
         path: path.join(cwd, '.git', 'info', 'exclude'),
         scope: 'config',
         severity: 'warning',
@@ -133,7 +135,7 @@ async function collectDoctorIssues(cwd: string, collectionRoot: string, scopes: 
 
   const [indexIssues, symlinkIssues] = await Promise.all([
     scopes.has('index') ? collectIndexIssues(collectionRoot) : Promise.resolve([]),
-    scopes.has('symlinks') ? collectSymlinkIssues(cwd, collectionRoot) : Promise.resolve([]),
+    scopes.has('symlinks') ? collectSymlinkIssues(cwd, collectionRoot, symlinkDir) : Promise.resolve([]),
   ])
 
   return [...issues, ...indexIssues, ...symlinkIssues]
@@ -255,10 +257,11 @@ function collectManagedMetadataIssues(rows: IndexedRow[]): DoctorIssue[] {
       })
     }
 
-    if (typeof frontmatter.path !== 'string' || frontmatter.path.trim().length === 0) {
+    const notePaths = frontmatter.paths
+    if (!Array.isArray(notePaths) || notePaths.length === 0) {
       issues.push({
-        code: 'index.invalid_path',
-        message: 'Managed note has missing or invalid frontmatter path',
+        code: 'index.invalid_paths',
+        message: 'Managed note has missing or empty frontmatter paths array',
         path: row.pathInCollection,
         scope: 'index',
         severity: 'error',
@@ -281,18 +284,18 @@ function collectManagedMetadataIssues(rows: IndexedRow[]): DoctorIssue[] {
   return issues
 }
 
-async function collectSymlinkIssues(cwd: string, collectionRoot: string): Promise<DoctorIssue[]> {
+async function collectSymlinkIssues(cwd: string, collectionRoot: string, symlinkDir: string): Promise<DoctorIssue[]> {
   const issues: DoctorIssue[] = []
   const managedPaths = listManagedPathsForCwd(cwd, collectionRoot)
   const desiredSymlinks = buildDesiredSymlinks(collectionRoot, managedPaths)
   const desiredByName = new Map(desiredSymlinks.map((entry) => [entry.symlinkName, entry.targetPath]))
-  const workingNotesDir = path.join(cwd, NOTES_DIR_NAME)
+  const workingNotesDir = path.join(cwd, symlinkDir)
 
   if (!(await directoryExists(workingNotesDir))) {
     if (desiredSymlinks.length > 0) {
       issues.push({
         code: 'symlinks.directory_missing',
-        message: `Expected ${NOTES_DIR_NAME}/ directory is missing`,
+        message: `Expected ${symlinkDir}/ directory is missing`,
         path: workingNotesDir,
         scope: 'symlinks',
         severity: 'error',
@@ -305,7 +308,7 @@ async function collectSymlinkIssues(cwd: string, collectionRoot: string): Promis
   const entries = await readdir(workingNotesDir)
   const existingNames = new Set(entries)
   const entryIssues = await Promise.all(
-    entries.map(async (entryName) => inspectWorkingEntry(workingNotesDir, entryName, desiredByName)),
+    entries.map(async (entryName) => inspectWorkingEntry(workingNotesDir, entryName, desiredByName, symlinkDir)),
   )
 
   issues.push(...entryIssues.flat())
@@ -329,6 +332,7 @@ async function inspectWorkingEntry(
   workingNotesDir: string,
   entryName: string,
   desiredByName: Map<string, string>,
+  symlinkDir: string,
 ): Promise<DoctorIssue[]> {
   const entryPath = path.join(workingNotesDir, entryName)
   const entryStat = await lstat(entryPath)
@@ -337,7 +341,7 @@ async function inspectWorkingEntry(
     return [
       {
         code: 'symlinks.non_symlink_entry',
-        message: 'Found non-symlink entry inside mdmd_notes/',
+        message: `Found non-symlink entry inside ${symlinkDir}/`,
         path: entryPath,
         scope: 'symlinks',
         severity: 'warning',
@@ -386,6 +390,7 @@ async function applyDoctorFixes(
   collectionRoot: string,
   scopes: Set<DoctorScope>,
   issues: DoctorIssue[],
+  symlinkDir: string,
 ): Promise<string[]> {
   const fixesApplied: string[] = []
 
@@ -397,14 +402,14 @@ async function applyDoctorFixes(
   }
 
   if (scopes.has('symlinks')) {
-    const symlinkFixResult = await applySymlinkFixes(cwd, collectionRoot)
+    const symlinkFixResult = await applySymlinkFixes(cwd, collectionRoot, symlinkDir)
     fixesApplied.push(
       `reconcile_symlinks: removed=${symlinkFixResult.removed}, ensured=${symlinkFixResult.ensured}`,
     )
   }
 
   if (scopes.has('config') || scopes.has('symlinks')) {
-    const gitExcludeEntry = `${NOTES_DIR_NAME}/`
+    const gitExcludeEntry = `${symlinkDir}/`
     const excludePresentBefore = await hasGitExcludeEntry(cwd, gitExcludeEntry)
     if (excludePresentBefore === false) {
       await ensureGitExcludeEntry(cwd, gitExcludeEntry)
@@ -415,11 +420,11 @@ async function applyDoctorFixes(
   return fixesApplied
 }
 
-async function applySymlinkFixes(cwd: string, collectionRoot: string): Promise<{ensured: number; removed: number}> {
+async function applySymlinkFixes(cwd: string, collectionRoot: string, symlinkDir: string): Promise<{ensured: number; removed: number}> {
   const managedPaths = listManagedPathsForCwd(cwd, collectionRoot)
   const desiredSymlinks = buildDesiredSymlinks(collectionRoot, managedPaths)
   const desiredByName = new Map(desiredSymlinks.map((entry) => [entry.symlinkName, entry.targetPath]))
-  const workingNotesDir = path.join(cwd, NOTES_DIR_NAME)
+  const workingNotesDir = path.join(cwd, symlinkDir)
 
   await mkdir(workingNotesDir, {recursive: true})
 

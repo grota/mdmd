@@ -8,10 +8,15 @@ export const CONFIG_PATH_ENV_VAR = 'MDMD_CONFIG_PATH'
 export const OBSIDIAN_CONFIG_PATH_ENV_VAR = 'MDMD_OBSIDIAN_CONFIG_PATH'
 export const XDG_CONFIG_HOME_ENV_VAR = 'XDG_CONFIG_HOME'
 
+export const SYMLINK_DIR_DEFAULT = 'mdmd_notes'
+export const INGEST_DEST_DEFAULT = 'inbox'
+
 export type MdmdConfig = {
   [key: string]: unknown
   collection?: unknown
   collectionPath?: unknown
+  'ingest-dest'?: unknown
+  'symlink-dir'?: unknown
 }
 
 export type MdmdRuntime = {
@@ -204,4 +209,17 @@ async function resolveObsidianVaultPath(runtime: MdmdRuntime): Promise<string | 
 
 export function resolveCollectionPathFromMdmdConfig(config: MdmdConfig): string | undefined {
   return resolveCollectionPathFromConfig(config)
+}
+
+export function resolveSymlinkDir(config: MdmdConfig): string {
+  const val = config['symlink-dir']
+  if (typeof val === 'string' && val.trim().length > 0) return val.trim()
+  return SYMLINK_DIR_DEFAULT
+}
+
+export function resolveIngestDest(config: MdmdConfig, flagOverride?: string): string {
+  if (flagOverride && flagOverride.trim().length > 0) return flagOverride.trim()
+  const val = config['ingest-dest']
+  if (typeof val === 'string' && val.trim().length > 0) return val.trim()
+  return INGEST_DEST_DEFAULT
 }

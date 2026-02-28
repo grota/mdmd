@@ -2,19 +2,19 @@ import {Command, Flags} from '@oclif/core'
 import {lstat, mkdir, readdir, unlink} from 'node:fs/promises'
 import path from 'node:path'
 
-import {createMdmdRuntime, resolveCollectionRoot} from '../lib/config'
+import {createMdmdRuntime, readMdmdConfig, resolveCollectionRoot, resolveSymlinkDir} from '../lib/config'
 import {ensureGitExcludeEntry} from '../lib/git'
 import {refreshIndex} from '../lib/refresh-index'
 import {ensureSymlinkTarget} from '../lib/symlink'
-import {buildDesiredSymlinks, listManagedPathsForCwd, NOTES_DIR_NAME} from '../lib/sync-state'
+import {buildDesiredSymlinks, listManagedPathsForCwd} from '../lib/sync-state'
 
 export default class Sync extends Command {
   static override description = 'Sync working-directory symlinks from collection metadata'
-static override examples = [
+  static override examples = [
     '<%= config.bin %> <%= command.id %>',
     '<%= config.bin %> <%= command.id %> --collection "/path/to/vault"',
   ]
-static override flags = {
+  static override flags = {
     collection: Flags.directory({
       char: 'c',
       description: 'Collection root path (highest priority over env/config defaults)',
@@ -29,12 +29,15 @@ static override flags = {
     const collectionRoot = await resolveCollectionRoot(flags.collection, runtime)
     await assertExistingDirectory(collectionRoot, `Collection path does not exist: ${collectionRoot}`)
 
+    const mdmdConfig = await readMdmdConfig(runtime)
+    const symlinkDir = resolveSymlinkDir(mdmdConfig)
+
     const refreshResult = await refreshIndex(collectionRoot)
     const managedPaths = listManagedPathsForCwd(cwd, collectionRoot)
     const desiredSymlinks = buildDesiredSymlinks(collectionRoot, managedPaths)
     const desiredByName = new Map(desiredSymlinks.map((entry) => [entry.symlinkName, entry.targetPath]))
 
-    const workingNotesDir = path.join(cwd, NOTES_DIR_NAME)
+    const workingNotesDir = path.join(cwd, symlinkDir)
     await mkdir(workingNotesDir, {recursive: true})
 
     const existingEntries = await readdir(workingNotesDir)
@@ -43,7 +46,7 @@ static override flags = {
         const symlinkPath = path.join(workingNotesDir, entryName)
         const symlinkStat = await lstat(symlinkPath)
         if (!symlinkStat.isSymbolicLink()) {
-          throw new Error(`Expected symlink in ${NOTES_DIR_NAME}/ but found non-symlink: ${entryName}`)
+          throw new Error(`Expected symlink in ${symlinkDir}/ but found non-symlink: ${entryName}`)
         }
 
         return {entryName, symlinkPath}
@@ -59,10 +62,10 @@ static override flags = {
       }),
     )
 
-    await ensureGitExcludeEntry(cwd, `${NOTES_DIR_NAME}/`)
+    await ensureGitExcludeEntry(cwd, `${symlinkDir}/`)
 
     this.log(
-      `Synced ${desiredSymlinks.length} note(s) to ${NOTES_DIR_NAME}/ ` +
+      `Synced ${desiredSymlinks.length} note(s) to ${symlinkDir}/ ` +
         `(removed ${staleSymlinks.length}, refreshed ${refreshResult.refreshed}, deleted ${refreshResult.deleted})`,
     )
   }
