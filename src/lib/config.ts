@@ -11,13 +11,14 @@ export const XDG_CONFIG_HOME_ENV_VAR = 'XDG_CONFIG_HOME'
 export const SYMLINK_DIR_DEFAULT = 'mdmd_notes'
 export const INGEST_DEST_DEFAULT = 'inbox'
 
-export const SUPPORTED_CONFIG_KEYS = ['collection', 'ingest-dest', 'symlink-dir'] as const
+export const SUPPORTED_CONFIG_KEYS = ['collection', 'ingest-dest', 'preview-cmd', 'symlink-dir'] as const
 export type SupportedConfigKey = (typeof SUPPORTED_CONFIG_KEYS)[number]
 
 export type MdmdConfig = {
   [key: string]: unknown
   collection?: string
   'ingest-dest'?: string
+  'preview-cmd'?: string
   'symlink-dir'?: string
 }
 

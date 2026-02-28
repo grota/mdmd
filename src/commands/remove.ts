@@ -1,50 +1,60 @@
 import {Args, Command, Flags} from '@oclif/core'
-import {lstat, readFile, readlink, unlink} from 'node:fs/promises'
+import {lstat, readFile, readlink, stat, unlink, writeFile} from 'node:fs/promises'
 import path from 'node:path'
 import {createInterface} from 'node:readline'
 
 import {createMdmdRuntime, readMdmdConfig, resolveCollectionRoot, resolveSymlinkDir} from '../lib/config'
-import {parseFrontmatter} from '../lib/frontmatter'
-import {deleteIndexNoteByPath, openIndexDb, resolveCollectionId, toCollectionRelativePath} from '../lib/index-db'
+import {parseFrontmatter, stringifyFrontmatter} from '../lib/frontmatter'
+import {openIndexDb, resolveCollectionId, toCollectionRelativePath, upsertIndexNote} from '../lib/index-db'
 import {refreshIndex} from '../lib/refresh-index'
 
-type ValidatedRemoval = {
-  otherPaths: string[]
+type RemovalPlan = {
+  absoluteNotePath: string
+  body: string
+  cwdSymlinkPath: string
+  frontmatter: Record<string, unknown>
+  mdmdId: null | string
+  otherSymlinkPaths: string[]
   pathInCollection: string
-  symlinkPath: string
-  targetPath: string
+  remainingPaths: string[]
+  willDeleteFile: boolean
 }
 
 export default class Remove extends Command {
   static override args = {
     symlink: Args.file({
-      description: 'Symlink path in the symlink directory to remove from the collection',
+      description: 'Symlink path in the symlink directory',
       exists: true,
       required: true,
     }),
   }
-  static override description = 'Remove note(s) from the collection by symlink path'
+  static override description = 'Remove a note from the current directory (and optionally from the collection)'
   static override examples = [
     '<%= config.bin %> <%= command.id %> mdmd_notes/note.md',
-    '<%= config.bin %> <%= command.id %> mdmd_notes/note.md mdmd_notes/other.md',
+    '<%= config.bin %> <%= command.id %> --all mdmd_notes/shared.md',
+    '<%= config.bin %> <%= command.id %> --preserve mdmd_notes/note.md',
     '<%= config.bin %> <%= command.id %> --dry-run mdmd_notes/note.md',
-    '<%= config.bin %> <%= command.id %> --force mdmd_notes/shared.md',
   ]
   static override flags = {
+    all: Flags.boolean({
+      char: 'a',
+      description: 'Remove all path associations (not just cwd), then delete the collection file',
+    }),
     collection: Flags.directory({
       char: 'c',
       description: 'Collection root path (highest priority over env/config defaults)',
       exists: true,
     }),
     'dry-run': Flags.boolean({
-      description: 'Show what would be deleted without deleting anything',
-    }),
-    force: Flags.boolean({
-      description: 'Delete even if the note is still linked from other directories',
+      description: 'Show what would happen without making any changes',
     }),
     interactive: Flags.boolean({
       char: 'i',
-      description: 'Prompt for confirmation before each deletion',
+      description: 'Prompt for confirmation before each removal',
+    }),
+    preserve: Flags.boolean({
+      char: 'p',
+      description: 'Keep the collection file even when no path associations remain',
     }),
   }
   static override strict = false
@@ -54,178 +64,175 @@ export default class Remove extends Command {
     const runtime = createMdmdRuntime(this.config.configDir)
     const cwd = path.resolve(process.cwd())
     const collectionRoot = await resolveCollectionRoot(flags.collection, runtime)
-    await assertExistingDirectory(collectionRoot, `Collection path does not exist: ${collectionRoot}`)
+    const stat = await lstat(collectionRoot).catch(() => null)
+    if (!stat?.isDirectory()) {
+      this.error(`Collection path does not exist: ${collectionRoot}`)
+    }
 
     const mdmdConfig = await readMdmdConfig(runtime)
     const symlinkDir = resolveSymlinkDir(mdmdConfig)
 
     await refreshIndex(collectionRoot)
 
-    const symlinkArgs = argv.map(String)
-
-    const validatedRemovals = await Promise.all(
-      symlinkArgs.map(async (symlinkArg) => this.validateRemovalInput(cwd, collectionRoot, symlinkArg, symlinkDir, flags.force ?? false)),
+    // Validate ALL inputs before touching anything
+    const plans = await Promise.all(
+      argv.map(String).map((arg) =>
+        this.buildPlan(arg, cwd, collectionRoot, symlinkDir, {
+          all: flags.all ?? false,
+          preserve: flags.preserve ?? false,
+        }),
+      ),
     )
 
     if (flags['dry-run']) {
-      for (const entry of validatedRemovals) {
-        this.log(`Would delete: ${entry.targetPath}`)
-        this.log(`Would remove from index: path_in_collection='${entry.pathInCollection}'`)
-        this.log(`Would remove symlink: ${path.relative(cwd, entry.symlinkPath)}`)
-        if (entry.otherPaths.length > 0) {
-          this.log(`  Note: also linked from: ${entry.otherPaths.join(', ')}`)
-        }
-      }
-
+      this.printDryRun(plans, cwd)
       return
     }
 
-    const db = openIndexDb(collectionRoot)
-    const collectionId = resolveCollectionId(db, collectionRoot)
     const prompt = flags.interactive ? createInterface({input: process.stdin, output: process.stdout}) : null
-
     try {
-      await processRemovalEntries(validatedRemovals, 0, {
-        collectionId,
-        cwd,
-        db,
-        log: (line) => this.log(line),
-        prompt,
-      })
+      for (const plan of plans) {
+        // eslint-disable-next-line no-await-in-loop
+        await this.executePlan(plan, cwd, collectionRoot, prompt)
+      }
     } finally {
       prompt?.close()
+    }
+  }
+
+  private async buildPlan(
+    symlinkArg: string,
+    cwd: string,
+    collectionRoot: string,
+    symlinkDir: string,
+    opts: {all: boolean; preserve: boolean},
+  ): Promise<RemovalPlan> {
+    const {all, preserve} = opts
+    const workingNotesDir = path.join(cwd, symlinkDir)
+    const cwdSymlinkPath = path.resolve(cwd, symlinkArg)
+
+    const rel = path.relative(workingNotesDir, cwdSymlinkPath)
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      this.error(`Symlink must be in ${symlinkDir}/: ${symlinkArg}`)
+    }
+
+    const symlinkStat = await lstat(cwdSymlinkPath).catch(() => null)
+    if (!symlinkStat?.isSymbolicLink()) {
+      this.error(`Symlink does not exist: ${symlinkArg}`)
+    }
+
+    const linkTarget = await readlink(cwdSymlinkPath)
+    const absoluteNotePath = path.resolve(path.dirname(cwdSymlinkPath), linkTarget)
+
+    const relToCollection = path.relative(collectionRoot, absoluteNotePath)
+    if (relToCollection.startsWith('..') || path.isAbsolute(relToCollection)) {
+      this.error(`Target is outside collection: ${absoluteNotePath}`)
+    }
+
+    const contents = await readFile(absoluteNotePath, 'utf8')
+    const {body, frontmatter} = parseFrontmatter(contents)
+
+    if (!frontmatter.mdmd_id) {
+      this.error(`Note is not managed (no mdmd_id): ${absoluteNotePath}`)
+    }
+
+    const existingPaths = Array.isArray(frontmatter.paths) ? (frontmatter.paths as string[]) : []
+    const pathInCollection = toCollectionRelativePath(collectionRoot, absoluteNotePath)
+    const basename = path.basename(cwdSymlinkPath)
+
+    if (!all && !existingPaths.includes(cwd)) {
+      this.error(`metadata mismatch: note is not associated with ${cwd} (paths: ${existingPaths.join(', ')})`)
+    }
+
+    const pathsToRemove = all ? existingPaths : [cwd]
+    const remainingPaths = existingPaths.filter((p) => !pathsToRemove.includes(p))
+    const willDeleteFile = remainingPaths.length === 0 && !preserve
+
+    // For --all: compute symlink paths in other directories
+    const otherDirs = all ? existingPaths.filter((p) => p !== cwd) : []
+    const otherSymlinkPaths = otherDirs.map((p) => path.join(p, symlinkDir, basename))
+
+    return {
+      absoluteNotePath,
+      body,
+      cwdSymlinkPath,
+      frontmatter,
+      mdmdId: typeof frontmatter.mdmd_id === 'string' ? frontmatter.mdmd_id : null,
+      otherSymlinkPaths,
+      pathInCollection,
+      remainingPaths,
+      willDeleteFile,
+    }
+  }
+
+  private async executePlan(
+    plan: RemovalPlan,
+    cwd: string,
+    collectionRoot: string,
+    prompt: null | ReturnType<typeof createInterface>,
+  ): Promise<void> {
+    if (prompt) {
+      const target = plan.willDeleteFile ? `delete ${plan.absoluteNotePath}` : `remove ${cwd} from ${plan.pathInCollection}`
+      const response = (await question(prompt, `${target}? [y/N]: `)).trim().toLowerCase()
+      if (response !== 'y' && response !== 'yes') {
+        this.log(`Skipped: ${plan.absoluteNotePath}`)
+        return
+      }
+    }
+
+    // Remove cwd symlink
+    await unlink(plan.cwdSymlinkPath).catch(() => {})
+
+    // Remove symlinks in other dirs (best-effort)
+    for (const sym of plan.otherSymlinkPaths) {
+      // eslint-disable-next-line no-await-in-loop
+      await unlink(sym).catch(() => this.warn(`Could not remove symlink: ${sym}`))
+    }
+
+    const db = openIndexDb(collectionRoot)
+    try {
+      const collectionId = resolveCollectionId(db, collectionRoot)
+
+      if (plan.willDeleteFile) {
+        await unlink(plan.absoluteNotePath)
+        db.query('DELETE FROM index_notes WHERE collection_id = ?1 AND path_in_collection = ?2').run(collectionId, plan.pathInCollection)
+        this.log(`Deleted: ${plan.absoluteNotePath}`)
+        this.log(`Removed from index: ${plan.pathInCollection}`)
+      } else {
+        const nextFrontmatter = {...plan.frontmatter, paths: plan.remainingPaths}
+        await writeFile(plan.absoluteNotePath, stringifyFrontmatter(nextFrontmatter, plan.body), 'utf8')
+        const fileStat = await stat(plan.absoluteNotePath)
+        upsertIndexNote(db, collectionId, {
+          frontmatter: nextFrontmatter,
+          mdmdId: plan.mdmdId,
+          mtime: Math.floor(fileStat.mtimeMs / 1000),
+          pathInCollection: plan.pathInCollection,
+          size: fileStat.size,
+        })
+        this.log(`Removed from ${path.basename(plan.cwdSymlinkPath)}`)
+        this.log(`  Remaining paths: ${plan.remainingPaths.join(', ')}`)
+      }
+    } finally {
       db.close()
     }
   }
 
-  private async validateRemovalInput(
-    cwd: string,
-    collectionRoot: string,
-    symlinkArg: string,
-    symlinkDir: string,
-    force: boolean,
-  ): Promise<ValidatedRemoval> {
-    const workingNotesDir = path.join(cwd, symlinkDir)
-    const symlinkPath = path.resolve(cwd, symlinkArg)
-    assertPathInDirectory(workingNotesDir, symlinkPath, `Symlink must be in ${symlinkDir}/: ${symlinkArg}`)
+  private printDryRun(plans: RemovalPlan[], cwd: string): void {
+    for (const plan of plans) {
+      this.log(`Would remove symlink: ${path.relative(cwd, plan.cwdSymlinkPath)}`)
+      for (const sym of plan.otherSymlinkPaths) {
+        this.log(`Would remove symlink: ${sym}`)
+      }
 
-    const symlinkStat = await getLstatOrThrow(symlinkPath, `Symlink does not exist: ${symlinkArg}`)
-    if (!symlinkStat.isSymbolicLink()) {
-      throw new Error(`Expected symlink but found non-symlink: ${symlinkArg}`)
-    }
-
-    const linkTarget = await readlink(symlinkPath)
-    const targetPath = path.resolve(path.dirname(symlinkPath), linkTarget)
-    const targetStat = await getLstatOrThrow(targetPath, `Symlink target not found: ${targetPath}`)
-    if (!targetStat.isFile()) {
-      throw new Error(`Symlink target is not a file: ${targetPath}`)
-    }
-
-    assertPathInDirectory(collectionRoot, targetPath, `Target is outside collection: ${targetPath}`)
-    const pathInCollection = toCollectionRelativePath(collectionRoot, targetPath)
-
-    const targetContents = await readFile(targetPath, 'utf8')
-    const {frontmatter} = parseFrontmatter(targetContents)
-
-    const notePaths = Array.isArray(frontmatter.paths) ? (frontmatter.paths as string[]) : []
-
-    if (notePaths.length === 0) {
-      throw new Error(`Note has no paths property in frontmatter: ${targetPath}`)
-    }
-
-    if (!notePaths.includes(cwd)) {
-      throw new Error(`metadata mismatch: note is not associated with ${cwd} (paths: ${notePaths.join(', ')})`)
-    }
-
-    const otherPaths = notePaths.filter((p) => p !== cwd)
-    if (otherPaths.length > 0 && !force) {
-      const basename = path.basename(targetPath)
-      throw new Error(
-        `${basename} is also linked from: ${otherPaths.join(', ')}. Use --force to delete anyway.`,
-      )
-    }
-
-    if (!frontmatter.mdmd_id) {
-      this.warn(`Note has no mdmd_id and is not managed, continuing: ${targetPath}`)
-    }
-
-    return {
-      otherPaths,
-      pathInCollection,
-      symlinkPath,
-      targetPath,
+      if (plan.willDeleteFile) {
+        this.log(`Would delete: ${plan.absoluteNotePath}`)
+        this.log(`Would remove from index: ${plan.pathInCollection}`)
+      } else {
+        this.log(`Would update paths in: ${plan.absoluteNotePath}`)
+        this.log(`  Remaining paths: ${plan.remainingPaths.join(', ')}`)
+      }
     }
   }
-}
-
-async function assertExistingDirectory(dirPath: string, errorMessage: string): Promise<void> {
-  try {
-    const directoryStat = await lstat(dirPath)
-    if (!directoryStat.isDirectory()) {
-      throw new Error(errorMessage)
-    }
-  } catch (error) {
-    const maybeError = error as NodeJS.ErrnoException
-    if (maybeError.code === 'ENOENT') {
-      throw new Error(errorMessage)
-    }
-
-    throw error
-  }
-}
-
-function assertPathInDirectory(directoryPath: string, candidatePath: string, errorMessage: string): void {
-  const relativePath = path.relative(directoryPath, candidatePath)
-  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
-    throw new Error(errorMessage)
-  }
-}
-
-async function getLstatOrThrow(targetPath: string, errorMessage: string): Promise<Awaited<ReturnType<typeof lstat>>> {
-  try {
-    return await lstat(targetPath)
-  } catch (error) {
-    const maybeError = error as NodeJS.ErrnoException
-    if (maybeError.code === 'ENOENT') {
-      throw new Error(errorMessage)
-    }
-
-    throw error
-  }
-}
-
-type RemovalContext = {
-  collectionId: number
-  cwd: string
-  db: ReturnType<typeof openIndexDb>
-  log: (line: string) => void
-  prompt: null | ReturnType<typeof createInterface>
-}
-
-async function processRemovalEntries(entries: ValidatedRemoval[], index: number, context: RemovalContext): Promise<void> {
-  const entry = entries[index]
-  if (!entry) {
-    return
-  }
-
-  if (context.prompt) {
-    const response = (await question(context.prompt, `Delete ${entry.targetPath}? [y/N]: `)).trim().toLowerCase()
-    if (response !== 'y' && response !== 'yes') {
-      context.log(`Skipped: ${entry.targetPath}`)
-      await processRemovalEntries(entries, index + 1, context)
-      return
-    }
-  }
-
-  await unlink(entry.targetPath)
-  deleteIndexNoteByPath(context.db, context.collectionId, entry.pathInCollection)
-  await unlink(entry.symlinkPath)
-
-  context.log(`Deleted: ${entry.targetPath}`)
-  context.log(`Removed from index: ${entry.pathInCollection}`)
-  context.log(`Removed symlink: ${path.relative(context.cwd, entry.symlinkPath)}`)
-
-  await processRemovalEntries(entries, index + 1, context)
 }
 
 async function question(rl: ReturnType<typeof createInterface>, prompt: string): Promise<string> {

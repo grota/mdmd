@@ -39,7 +39,7 @@ mdmd has a strict ownership model for frontmatter:
 | Property     | Type       | Ownership   | Set by                          | Description                                                              |
 |--------------|------------|-------------|---------------------------------|--------------------------------------------------------------------------|
 | `mdmd_id`    | UUID v4    | maintained  | `ingest` / `link`               | Unique identity for the note across renames and moves                    |
-| `paths`      | `string[]` | maintained  | `ingest` / `link` / `unlink`    | Absolute paths of project directories this note is associated with       |
+| `paths`      | `string[]` | maintained  | `ingest` / `link` / `remove`    | Absolute paths of project directories this note is associated with       |
 | `created_at` | ISO 8601   | stamped     | `ingest` / `link` (first time)  | When mdmd first managed this note; never overwritten                     |
 | `git_sha`    | string     | stamped     | `ingest` (if cwd is a git repo) | HEAD commit SHA at time of ingestion; records the project state snapshot |
 
@@ -113,7 +113,7 @@ Frontmatter on disk is always authoritative.
 Consequences:
 - Users can edit `paths`, `mdmd_id`, or any other frontmatter directly in
   Obsidian (or any editor) and mdmd will honour it on the next command run.
-- Every user-facing command (`ingest`, `sync`, `link`, `unlink`, `list`, `remove`,
+- Every user-facing command (`ingest`, `sync`, `link`, `list`, `remove`,
   `doctor`) runs `refresh_index` first, so the cache is always fresh before
   any decision is made.
 - External changes (note moved/renamed in Obsidian, frontmatter edited) are
@@ -150,7 +150,7 @@ mdmd list
 # (ideas.md is not listed here — it belongs to /current/project, not /other-project)
 
 # Done with it in this project — detach without deleting
-mdmd unlink mdmd_notes/architecture.md
+mdmd remove mdmd_notes/architecture.md
 # /other-project removed from paths in frontmatter and index
 # symlink mdmd_notes/architecture.md removed
 # note remains in collection, still linked from /current/project
@@ -158,13 +158,14 @@ mdmd unlink mdmd_notes/architecture.md
 # Permanently delete a note from the collection
 cd /current/project
 mdmd remove mdmd_notes/architecture.md
-# Safety check: passes (paths contains only /current/project now)
+# paths now contains only /current/project → last path removed
 # physical file deleted from collection
 # index row deleted, symlink removed
 
-# remove refuses if note is still linked elsewhere
-mdmd remove mdmd_notes/ideas.md   # (hypothetically still linked from /other-project too)
-# Error: note is also linked from /other-project. Use --force to delete anyway.
+# remove all path associations at once and delete
+mdmd remove --all mdmd_notes/ideas.md   # (linked from /other-project too)
+# symlinks in both /current/project and /other-project removed
+# physical file deleted from collection
 ```
 
 ## Commands
@@ -231,28 +232,77 @@ path, which means knowing where the note lives inside the collection. Use
 - Collection file not found: error.
 - Symlink name collision that cannot be resolved: error.
 
-### `mdmd unlink <symlink>...`
+### `mdmd remove <symlink>...`
 
-Detaches a note from the current directory without deleting it from the collection.
-The note remains in the collection and stays linked to any other directories.
+Removes path associations from one or more managed notes. By default, removes
+cwd from `paths` for each given symlink and deletes the collection file if no
+paths remain. Use `--all` to remove all associations at once. Use `--preserve`
+to keep the file even if paths becomes empty.
 
-Steps (per symlink):
+**Arguments:**
+- `<symlink>...`: One or more symlink paths inside the symlink directory
+  (e.g., `mdmd_notes/foo.md mdmd_notes/bar.md`)
+
+**Steps (per symlink, all safety checks run before any changes):**
 1. Verify the symlink exists in `<cwd>/<symlink-dir>/`.
 2. Resolve the symlink to get the physical collection path.
 3. Verify the target exists and is within the collection.
 4. Read frontmatter; verify note is managed (has `mdmd_id`).
-5. Remove cwd from `paths`. Write updated frontmatter back to file.
-6. Update the SQLite index.
-7. Remove the symlink.
+5. Default mode: verify cwd is in `paths` (error if not — indicates drift).
+6. Compute `remainingPaths = existingPaths − pathsToRemove`.
+7. Determine `willDeleteFile = remainingPaths.length === 0 && !--preserve`.
+8. **[If `--dry-run`]** Print the plan and stop.
+9. Remove the symlink(s): always the cwd symlink; if `--all`, also symlinks in
+   all other path directories (best-effort — warns on failure, does not abort).
+10. If `willDeleteFile`: delete the physical file from the collection and remove
+    the index entry.
+11. Otherwise: write updated frontmatter (`paths = remainingPaths`) and upsert
+    the index.
 
 **Flags:**
-- `-i, --interactive`: Prompt for confirmation before each unlink.
+- `-a, --all`: Remove ALL path associations (not just cwd). Attempts to remove
+  symlinks from every directory in `paths`. Combined with the default delete
+  behavior, this is equivalent to the old `remove --force`.
+- `-p, --preserve`: Keep the collection file even if `remainingPaths` is empty.
+  Creates an "orphaned" note (no `paths`) that can be re-linked later.
+- `--dry-run`: Show what would change without executing.
+- `-i, --interactive`: Prompt for confirmation before each note.
 
 **Error cases:**
-- Symlink does not exist: error.
-- Target is outside the collection: error.
-- Note is not managed (no `mdmd_id`): error (nothing to unlink from).
-- cwd is not in note's `paths`: warning, still removes the symlink (drift recovery).
+- Symlink does not exist: error and abort.
+- Symlink target not found: error and abort.
+- Target is outside collection: error and abort.
+- Note is not managed (no `mdmd_id`): error and abort.
+- cwd not in note's `paths` (default mode only): error and abort.
+- All safety checks must pass for ALL symlinks before ANY changes occur.
+
+**Example:**
+```bash
+# Default: remove cwd from paths — file deleted because last path
+mdmd remove mdmd_notes/ideas.md
+# ✓ Removed cwd from paths. No remaining paths → deleted: <collection>/inbox/ideas.md
+
+# Default: remove cwd from paths — file kept because other paths remain
+mdmd remove mdmd_notes/architecture.md
+# ✓ Removed /current/project from paths. Remaining: /other-project
+
+# Remove all associations and delete
+mdmd remove --all mdmd_notes/architecture.md
+# ✓ Removed all paths. Deleted: <collection>/Projects/architecture.md
+
+# Remove all but keep the file
+mdmd remove --all --preserve mdmd_notes/architecture.md
+# ✓ Removed all paths. File preserved (no paths remain).
+
+# Dry run
+mdmd remove --dry-run mdmd_notes/ideas.md
+# Would remove /current/project from paths. No remaining paths → would delete: <collection>/inbox/ideas.md
+
+# Interactive
+mdmd remove -i mdmd_notes/ideas.md
+# Remove /current/project from paths of <collection>/inbox/ideas.md? [y/N]: y
+# ✓ Done
+```
 
 ### `mdmd list`
 
@@ -416,68 +466,6 @@ Steps:
 
 Manually deleted symlinks are recreated. The collection is the source of truth.
 
-### `mdmd remove <symlink>...`
-
-Permanently deletes one or more notes from the collection by specifying their
-symlinks in the current directory.
-
-**Arguments:**
-- `<symlink>...`: One or more symlink paths inside the symlink directory
-  (e.g., `mdmd_notes/foo.md mdmd_notes/bar.md`)
-
-**Steps (per symlink, all safety checks run before any deletions):**
-1. Verify symlink exists.
-2. Resolve symlink to get physical collection path.
-3. Verify target file exists and is within the collection.
-4. Read frontmatter; extract `paths`.
-5. If `paths` contains entries **other than cwd**, abort with a warning listing
-   the other directories. Require `--force` to override.
-6. **[If `--dry-run`]** Print what would be deleted and stop.
-7. Delete the physical file from the collection.
-8. Remove the index entry.
-9. Remove the symlink.
-
-**Flags:**
-- `--dry-run`: Show what would be deleted without actually deleting.
-- `-i, --interactive`: Prompt for confirmation before each deletion.
-- `--force`: Delete even if the note is still linked from other directories.
-
-**Error cases:**
-- Symlink does not exist: error and abort.
-- Symlink target not found: error and abort.
-- Target is outside collection: error and abort.
-- Note still linked from other directories (without `--force`): error and abort.
-- Note is not managed (no `mdmd_id`): warning, still proceed with deletion.
-
-**Behavior:**
-- All safety checks must pass for ALL symlinks before ANY deletions occur.
-- No confirmation prompt by default unless `-i`.
-
-**Example:**
-```bash
-# Remove a note only linked here — succeeds immediately
-mdmd remove mdmd_notes/ideas.md
-# ✓ Deleted: <collection>/inbox/ideas.md
-
-# Remove a note also linked elsewhere — blocked
-mdmd remove mdmd_notes/architecture.md
-# Error: architecture.md is also linked from: /other-project
-# Use --force to delete anyway.
-
-# Force delete
-mdmd remove --force mdmd_notes/architecture.md
-# ✓ Deleted: <collection>/Projects/architecture.md
-
-# Dry run
-mdmd remove --dry-run mdmd_notes/ideas.md
-# Would delete: <collection>/inbox/ideas.md
-
-# Interactive
-mdmd remove -i mdmd_notes/ideas.md
-# Delete <collection>/inbox/ideas.md? [y/N]: y
-# ✓ Deleted
-```
-
 ### `mdmd doctor`
 
 Runs health checks for index, symlink state, and configuration.
@@ -565,17 +553,16 @@ Implement commands in this order to minimize cross-command rework:
 1. internal `refresh_index`
 2. `link`
 3. `ingest` (wraps `link`)
-4. `unlink`
-5. `sync`
-6. `list`
-7. `remove`
-8. `doctor`
-9. `config` (new keys)
+4. `sync`
+5. `list`
+6. `remove`
+7. `doctor`
+8. `config` (new keys)
 
 ## Future Considerations
 
 - `mdmd move <symlink> --to <other-dir>`: reassign a note's path association
-  (equivalent to `unlink` + `link` in the target directory).
+  (equivalent to `remove` + `link` in the target directory).
 - Search and filter by frontmatter properties (tags, dates, etc.) via `mdmd list`.
 - Faceted narrowing.
 - TUI for interactive browsing/filtering (using opentui).
@@ -593,7 +580,7 @@ None at this time.
   markdown collections in the future.
 - **`paths` property**: Array of strings (`paths: string[]`). A note can be
   associated with zero, one, or many project directories. This is the central
-  design choice enabling `link`/`unlink` and safe multi-project sharing.
+  design choice enabling `link`/`remove` and safe multi-project sharing.
   Replaced the prior scalar `path: string` design.
 - **`git_sha` stamped at ingest**: `ingest` sets `git_sha` to the HEAD commit SHA
   if cwd is a git repo, but only if the property is not already present. It records
@@ -602,12 +589,9 @@ None at this time.
   never updated by mdmd after that point. Notes adopted via `link` do not get
   `git_sha` set (they already exist in the collection; their provenance predates
   mdmd management). Users can set or override `git_sha` freely.
-- **`link` and `unlink` are atoms**: `ingest` = move + link. `remove` = unlink-all
-  + delete. `sync` = reconcile reality to match what `paths` says. All commands
-  compose from these two primitives.
-- **`remove` multi-path safety**: If a note's `paths` contains entries beyond the
-  current cwd, `remove` aborts unless `--force` is passed. This prevents accidental
-  deletion of notes still in use elsewhere.
+- **`link` and remove are atoms**: `ingest` = move + link. `remove` = unlink-from-cwd
+  (or unlink-all with `--all`) + optional delete. `sync` = reconcile reality to match
+  what `paths` says. All commands compose from these two primitives.
 - **Path representation**: absolute paths. Known limitation: associations break
   if the project directory is moved/renamed. `doctor` can detect and optionally
   clean stale path entries.
@@ -656,5 +640,149 @@ None at this time.
   Called automatically by every user-facing command before it does any work.
 - **Removal behavior**: No confirmation by default. Interactive mode via `-i` flag.
   All safety checks must pass before any deletions occur.
-- **Language/runtime**: TypeScript on Bun. opentui available for future TUI
-  needs, but initial implementation is CLI-only.
+- **Language/runtime**: TypeScript on Bun. TUI implemented with `@opentui/react`.
+
+---
+
+## TUI — `mdmd tui`
+
+An interactive, keyboard-driven dashboard for browsing and acting on the note collection.
+Targets power users: minimal mouse, vim-style navigation, contextual help.
+
+### Layout
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  mdmd  │ / [___filter_________________________] │ created_at ↓  7/42 │
+├──────────────────────────────┬───────────────────────────────────────┤
+│ NOTE LIST                    │ NOTE PREVIEW (markdown)               │
+│ ▶ ● architecture.md          │ # Architecture Decision Record        │
+│   ● research.md              │                                       │
+│     todo.md                  │ ## Context                            │
+│     ideas.md                 │ We need to choose a storage backend   │
+│     api-design.md            │ for the new API layer...              │
+│     ...                      │                                       │
+│                              │ ## Decision                           │
+│                              │ Use SQLite for local-first storage.   │
+│                              │                                       │
+│                              │ (scrollable, rendered markdown)       │
+├──────────────────────────────┴───────────────────────────────────────┤
+│ j/k:nav  /:filter  s:sort  Enter:preview  o:edit  x:remove  ?:help   │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**Header bar**: filter input (always visible, `/` focuses it), active sort field + direction, count `filtered/total`.
+
+**Note list** (left pane): scrollable. `●` marks notes linked to cwd. `▶` marks current cursor position. Multi-select marks shown inline. Respects active filter and sort.
+
+**Note preview panel** (right pane): full note content rendered with OpenTUI's native `<markdown>` component (Tree-sitter syntax highlighting, scrollable). Updates live as navigation changes selection. The external viewer process is only used for the full-screen `Enter` action.
+
+**Help bar** (bottom): single-line context-sensitive hint. `?` opens full help overlay.
+
+### Entry point
+
+```
+mdmd tui [--collection <path>]
+```
+
+Runs collection-wide (all managed notes). cwd is used as context for `link`/`remove` actions and for the `●` indicator (notes linked to cwd).
+
+### Modes
+
+| Mode | Entry | Exit |
+|------|-------|------|
+| NORMAL | default | — |
+| FILTER | `/` | `Esc` (clear) or `Enter`/`Tab` (lock) |
+| BATCH | first `Space` | `Esc` or all deselected |
+| HELP overlay | `?` | `?` / `Esc` / `q` |
+
+### Keyboard shortcuts
+
+#### NORMAL mode
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Next note |
+| `k` / `↑` | Previous note |
+| `g` / `Home` | First note |
+| `G` / `End` | Last note |
+| `Ctrl+d` / `PageDown` | Page down |
+| `Ctrl+u` / `PageUp` | Page up |
+| `Enter` | Preview note in external viewer |
+| `o` | Open note in `$EDITOR` |
+| `l` | Link note to cwd |
+| `x` | Remove note from cwd (auto-deletes file if last path) |
+| `y` | Yank `path_in_collection` to clipboard (OSC 52) |
+| `/` | Enter FILTER mode |
+| `s` | Cycle sort field |
+| `S` | Toggle sort direction (asc/desc) |
+| `Space` | Toggle selection (enter BATCH mode) |
+| `?` | Toggle help overlay |
+| `q` / `Ctrl+C` | Quit |
+
+#### FILTER mode
+
+| Key | Action |
+|-----|--------|
+| Type | Update filter live (results narrow as you type) |
+| `Enter` / `Tab` | Lock filter and return to NORMAL |
+| `Esc` | Clear filter and return to NORMAL |
+
+#### BATCH mode (selection active)
+
+| Key | Action |
+|-----|--------|
+| `Space` | Toggle selection on current note |
+| `*` | Select all / deselect all (filtered view) |
+| `L` | Link all selected to cwd |
+| `X` | Remove all selected from cwd (auto-deletes each if last path) |
+| `Esc` | Clear selection |
+
+### Filter syntax
+
+A single input bar. Tokens separated by spaces are ANDed together.
+
+| Token | Meaning |
+|-------|---------|
+| `word` (no colon) | Fuzzy match against `path_in_collection` + all frontmatter string values |
+| `field:value` | Frontmatter field `field` contains `value` (substring, case-insensitive) |
+| `paths:/my/proj` | Any element of the `paths` array contains `/my/proj` |
+| `tags:design` | `tags` field (string or array) contains `design` |
+
+Examples:
+```
+architecture                    # fuzzy filename/frontmatter match
+tags:design paths:/proj/api     # structured: has tag 'design' AND linked to proj/api
+tags:design api                 # structured + fuzzy combined
+```
+
+### Sort fields (cycle with `s`)
+
+1. `path_in_collection` — alphabetical (default)
+2. `created_at` — newest first
+3. `paths count` — most-linked first
+
+### External previewer
+
+Config key `preview-cmd` (optional). Resolution order:
+
+1. `MDMD_PREVIEW_CMD` env var
+2. `preview-cmd` config value
+3. Auto-detect at startup: `glow` → `bat --language markdown` → `cat`
+
+`Enter` launches the previewer as `$PREVIEW_CMD <absolute-path>`, suspending the TUI until the process exits. TUI resumes without re-running `refresh_index` (previewer is read-only).
+
+### External editor
+
+Uses standard `$EDITOR`. `o` launches `$EDITOR <absolute-path>`, suspending the TUI. TUI re-runs `refresh_index` on return (edit may have changed frontmatter).
+
+### Implementation notes
+
+- New oclif command: `src/commands/tui.ts`
+- TUI app lives in `src/tui/` — React (`@opentui/react`) components
+- Dependencies: `@opentui/react`, `@opentui/core`, `react`
+- State: `useReducer` with a single top-level reducer (mode, filter, sort, selection, notes list, cursor)
+- Data: `refreshIndex` → `openIndexDb` → query all managed notes with frontmatter; re-run on return from editor
+- The `preview-cmd` key is added to `config.schema.json` and `SUPPORTED_CONFIG_KEYS`
+- TUI respects terminal resize via `useTerminalDimensions`
+- Never calls `process.exit()` — always `renderer.destroy()`

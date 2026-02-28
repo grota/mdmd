@@ -17,6 +17,10 @@
     "symlink-dir": {
       "type": "string",
       "description": "Name of the symlink directory created inside each linked project directory. Defaults to 'mdmd_notes'."
+    },
+    "preview-cmd": {
+      "type": "string",
+      "description": "Command to use for previewing notes. Auto-detected: glow → bat --language markdown → cat"
     }
   }
 }

@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os'
 import path from 'node:path'
 import {fileURLToPath} from 'node:url'
 
-import {stringifyFrontmatter} from '../../src/lib/frontmatter'
+import {parseFrontmatter, stringifyFrontmatter} from '../../src/lib/frontmatter'
 import {INDEX_DB_PATH_ENV_VAR} from '../../src/lib/index-db'
 import {refreshIndex} from '../../src/lib/refresh-index'
 
@@ -25,38 +25,117 @@ describe('mdmd remove command', () => {
     }
   })
 
-  it('removes collection file, index row, and symlink', async () => {
+  it('removes cwd from paths and deletes file when it is the last path', async () => {
     tempRoot = await mkdtemp(path.join(tmpdir(), 'mdmd-remove-test-'))
     const {collectionDir, homeDir, indexDbPath, workDir} = await setupDirs(tempRoot)
-    const sourcePath = path.join(workDir, 'note.md')
-    await writeFile(sourcePath, '# remove me\n', 'utf8')
+    await writeFile(path.join(workDir, 'note.md'), '# remove me\n', 'utf8')
 
     const ingestResult = runCli(['ingest', 'note.md', '--collection', collectionDir], workDir, homeDir, indexDbPath)
     expect(ingestResult.status, `${ingestResult.stdout}\n${ingestResult.stderr}`).to.equal(0)
 
-    const removeResult = runCli(
-      ['remove', 'mdmd_notes/note.md', '--collection', collectionDir],
-      workDir,
-      homeDir,
-      indexDbPath,
-    )
+    const collectionFile = path.join(collectionDir, 'inbox', 'note.md')
+    const symlinkPath = path.join(workDir, 'mdmd_notes', 'note.md')
+
+    const removeResult = runCli(['remove', 'mdmd_notes/note.md', '--collection', collectionDir], workDir, homeDir, indexDbPath)
     expect(removeResult.status, `${removeResult.stdout}\n${removeResult.stderr}`).to.equal(0)
 
-    await expectPathMissing(path.join(collectionDir, 'inbox', 'note.md'))
-    await expectPathMissing(path.join(workDir, 'mdmd_notes', 'note.md'))
+    await expectPathMissing(collectionFile)
+    await expectPathMissing(symlinkPath)
 
     const db = new Database(indexDbPath)
-    const remaining = db.query(`
-      SELECT COUNT(*) AS count
-      FROM index_notes
-      WHERE path_in_collection = 'inbox/note.md'
-    `).get() as {count: number}
+    const remaining = db.query(`SELECT COUNT(*) AS count FROM index_notes WHERE path_in_collection = 'inbox/note.md'`).get() as {count: number}
     db.close()
-
     expect(remaining.count).to.equal(0)
   })
 
-  it('supports dry-run without deleting anything', async () => {
+  it('removes only cwd from paths and keeps file when other paths remain', async () => {
+    tempRoot = await mkdtemp(path.join(tmpdir(), 'mdmd-remove-test-'))
+    const {collectionDir, homeDir, indexDbPath, workDir} = await setupDirs(tempRoot)
+
+    const otherDir = path.join(tempRoot, 'other-work')
+    await mkdir(otherDir, {recursive: true})
+    const collectionFile = path.join(collectionDir, 'multi.md')
+    await writeMarkdownNote(
+      collectionFile,
+      {
+        // eslint-disable-next-line camelcase
+        mdmd_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        paths: [workDir, otherDir],
+      },
+      '# multi-path\n',
+    )
+    const symlinkDir = path.join(workDir, 'mdmd_notes')
+    await mkdir(symlinkDir, {recursive: true})
+    await symlink(collectionFile, path.join(symlinkDir, 'multi.md'))
+
+    const removeResult = runCli(['remove', 'mdmd_notes/multi.md', '--collection', collectionDir], workDir, homeDir, indexDbPath)
+    expect(removeResult.status, `${removeResult.stdout}\n${removeResult.stderr}`).to.equal(0)
+
+    // symlink in cwd is gone
+    await expectPathMissing(path.join(symlinkDir, 'multi.md'))
+
+    // collection file still exists
+    await expectPathExists(collectionFile)
+
+    // paths now only contains otherDir
+    const {frontmatter} = parseFrontmatter(await readFile(collectionFile, 'utf8'))
+    expect(frontmatter.paths).to.deep.equal([otherDir])
+  })
+
+  it('removes all path associations and deletes file with --all', async () => {
+    tempRoot = await mkdtemp(path.join(tmpdir(), 'mdmd-remove-test-'))
+    const {collectionDir, homeDir, indexDbPath, workDir} = await setupDirs(tempRoot)
+
+    const otherDir = path.join(tempRoot, 'other-work')
+    await mkdir(otherDir, {recursive: true})
+    const collectionFile = path.join(collectionDir, 'multi.md')
+    await writeMarkdownNote(
+      collectionFile,
+      {
+        // eslint-disable-next-line camelcase
+        mdmd_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        paths: [workDir, otherDir],
+      },
+      '# multi-path\n',
+    )
+
+    const cwdSymlinkDir = path.join(workDir, 'mdmd_notes')
+    const otherSymlinkDir = path.join(otherDir, 'mdmd_notes')
+    await mkdir(cwdSymlinkDir, {recursive: true})
+    await mkdir(otherSymlinkDir, {recursive: true})
+    await symlink(collectionFile, path.join(cwdSymlinkDir, 'multi.md'))
+    await symlink(collectionFile, path.join(otherSymlinkDir, 'multi.md'))
+
+    const removeResult = runCli(['remove', '--all', 'mdmd_notes/multi.md', '--collection', collectionDir], workDir, homeDir, indexDbPath)
+    expect(removeResult.status, `${removeResult.stdout}\n${removeResult.stderr}`).to.equal(0)
+
+    await expectPathMissing(collectionFile)
+    await expectPathMissing(path.join(cwdSymlinkDir, 'multi.md'))
+    await expectPathMissing(path.join(otherSymlinkDir, 'multi.md'))
+  })
+
+  it('keeps collection file with --preserve even when no paths remain', async () => {
+    tempRoot = await mkdtemp(path.join(tmpdir(), 'mdmd-remove-test-'))
+    const {collectionDir, homeDir, indexDbPath, workDir} = await setupDirs(tempRoot)
+    await writeFile(path.join(workDir, 'note.md'), '# keep me\n', 'utf8')
+
+    const ingestResult = runCli(['ingest', 'note.md', '--collection', collectionDir], workDir, homeDir, indexDbPath)
+    expect(ingestResult.status, `${ingestResult.stdout}\n${ingestResult.stderr}`).to.equal(0)
+
+    const collectionFile = path.join(collectionDir, 'inbox', 'note.md')
+
+    const removeResult = runCli(['remove', '--preserve', 'mdmd_notes/note.md', '--collection', collectionDir], workDir, homeDir, indexDbPath)
+    expect(removeResult.status, `${removeResult.stdout}\n${removeResult.stderr}`).to.equal(0)
+
+    // collection file still exists
+    await expectPathExists(collectionFile)
+
+    // but paths is now empty
+    const {frontmatter} = parseFrontmatter(await readFile(collectionFile, 'utf8'))
+    expect(frontmatter.paths).to.deep.equal([])
+  })
+
+  it('supports dry-run without making any changes', async () => {
     tempRoot = await mkdtemp(path.join(tmpdir(), 'mdmd-remove-test-'))
     const {collectionDir, homeDir, indexDbPath, workDir} = await setupDirs(tempRoot)
     await writeFile(path.join(workDir, 'note.md'), '# keep me\n', 'utf8')
@@ -77,7 +156,7 @@ describe('mdmd remove command', () => {
     await expectPathExists(path.join(workDir, 'mdmd_notes', 'note.md'))
   })
 
-  it('aborts without deleting anything when any safety check fails', async () => {
+  it('aborts all operations when any safety check fails (all-or-nothing)', async () => {
     tempRoot = await mkdtemp(path.join(tmpdir(), 'mdmd-remove-test-'))
     const {collectionDir, homeDir, indexDbPath, workDir} = await setupDirs(tempRoot)
     const workingNotesDir = path.join(workDir, 'mdmd_notes')
@@ -124,47 +203,6 @@ describe('mdmd remove command', () => {
     await expectPathExists(path.join(workingNotesDir, 'valid.md'))
     await expectPathExists(path.join(workingNotesDir, 'mismatch.md'))
   })
-
-  it('aborts if note is linked from other directories without --force, succeeds with --force', async () => {
-    tempRoot = await mkdtemp(path.join(tmpdir(), 'mdmd-remove-test-'))
-    const {collectionDir, homeDir, indexDbPath, workDir} = await setupDirs(tempRoot)
-    await writeFile(path.join(workDir, 'note.md'), '# shared\n', 'utf8')
-
-    const ingestResult = runCli(['ingest', 'note.md', '--collection', collectionDir], workDir, homeDir, indexDbPath)
-    expect(ingestResult.status, `${ingestResult.stdout}\n${ingestResult.stderr}`).to.equal(0)
-
-    // Manually add a second path to the frontmatter to simulate a multi-dir note
-    const collectionFile = path.join(collectionDir, 'inbox', 'note.md')
-    const {parseFrontmatter, stringifyFrontmatter} = await import('../../src/lib/frontmatter')
-    const noteContents = await readFile(collectionFile, 'utf8')
-    const {body, frontmatter} = parseFrontmatter(noteContents)
-    const updatedFrontmatter = {...frontmatter, paths: [...(frontmatter.paths as string[]), '/tmp/other-dir']}
-    await writeFile(collectionFile, stringifyFrontmatter(updatedFrontmatter, body), 'utf8')
-
-    // Remove without --force should fail
-    const removeResult = runCli(
-      ['remove', 'mdmd_notes/note.md', '--collection', collectionDir],
-      workDir,
-      homeDir,
-      indexDbPath,
-    )
-    expect(removeResult.status).to.not.equal(0)
-    expect(removeResult.stderr).to.contain('also linked from')
-
-    await expectPathExists(collectionFile)
-    await expectPathExists(path.join(workDir, 'mdmd_notes', 'note.md'))
-
-    // Remove with --force should succeed
-    const forceResult = runCli(
-      ['remove', '--force', 'mdmd_notes/note.md', '--collection', collectionDir],
-      workDir,
-      homeDir,
-      indexDbPath,
-    )
-    expect(forceResult.status, `${forceResult.stdout}\n${forceResult.stderr}`).to.equal(0)
-    await expectPathMissing(collectionFile)
-    await expectPathMissing(path.join(workDir, 'mdmd_notes', 'note.md'))
-  })
 })
 
 function runCli(args: string[], cwd: string, homeDir: string, indexDbPath: string): ReturnType<typeof spawnSync> {
@@ -193,9 +231,8 @@ async function setupDirs(tempPath: string): Promise<{
   return {collectionDir, homeDir, indexDbPath, workDir}
 }
 
-async function writeMarkdownNote(filePath: string, frontmatter: Record<string, unknown>, body: string): Promise<void> {
-  const markdown = stringifyFrontmatter(frontmatter, body)
-  await writeFile(filePath, markdown, 'utf8')
+async function writeMarkdownNote(notePath: string, frontmatter: Record<string, unknown>, body: string): Promise<void> {
+  await writeFile(notePath, stringifyFrontmatter(frontmatter, body), 'utf8')
 }
 
 async function expectPathExists(targetPath: string): Promise<void> {
