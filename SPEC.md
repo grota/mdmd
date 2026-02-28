@@ -27,76 +27,202 @@ Collection resolution priority:
 
 Notes managed by `mdmd` have the following frontmatter properties:
 
-| Property         | Type       | Required | Description                                      |
-|------------------|------------|----------|--------------------------------------------------|
-| `mdmd_id`        | UUID v4    | Yes      | Unique identifier for the note                   |
-| `path`           | `string`   | Yes      | Directory path this note is related to           |
-| `created_at`     | ISO 8601   | Yes      | Timestamp of creation by `mdmd`                  |
-| `git_sha`        | string     | No       | HEAD commit SHA, set if cwd is a git repo at ingest time |
+| Property     | Type       | Required | Set by                   | Description                                              |
+|--------------|------------|----------|--------------------------|----------------------------------------------------------|
+| `mdmd_id`    | UUID v4    | Yes      | `ingest` / `link`        | Unique identity for the note across renames and moves    |
+| `paths`      | `string[]` | Yes      | `ingest` / `link` / `unlink` | Absolute paths of project directories this note is associated with |
+| `created_at` | ISO 8601   | Yes      | `ingest` / `link` (first time) | When mdmd first managed this note                 |
 
-This schema may be expanded in the future.
+Notes in the collection that have never been managed by mdmd have none of these
+properties and are still indexed, but do not participate in `sync`.
 
 ### Note Identity
 
 Notes are uniquely identified by `mdmd_id` (UUID v4), stored in frontmatter.
-This allows notes to be renamed or moved within the collection without losing identity.
+This allows notes to be renamed or moved within the collection without losing
+identity or path associations.
 
 Rules:
-- `ingest` always generates a `mdmd_id` if one is not present.
-- `refresh_index` indexes all markdown files in the collection, regardless of whether
-  they have a `mdmd_id`. Notes without a `mdmd_id` are indexed by their
-  collection-relative path. This allows collection-wide search and filtering.
-- A note with a `mdmd_id` is considered "managed" by mdmd. Only managed notes
-  participate in `sync` (since `sync` matches on the `path` property, which is
-  only guaranteed to exist on managed notes).
+- A note with a `mdmd_id` is considered **managed**. Only managed notes participate
+  in `sync` (since `sync` matches on the `paths` property).
+- `ingest` and `link` always assign a `mdmd_id` if one is not present.
+- `refresh_index` indexes all markdown files in the collection, regardless of
+  whether they have a `mdmd_id`. This enables collection-wide search and filtering.
+
+### Multi-directory Associations
+
+A note's `paths` array holds the absolute paths of every project directory it is
+linked to. A note may be associated with:
+- **Zero directories**: it exists only in the collection (not projected anywhere).
+- **One directory**: the common case — linked to exactly one project.
+- **Multiple directories**: the note is relevant to more than one project.
+
+`sync` for a given cwd creates symlinks for every managed note whose `paths` array
+contains that cwd.
 
 ### Symlink Directory
 
-Notes are symlinked into `mdmd_notes/` relative to the working directory.
-This directory name is configurable (default: `mdmd_notes/`).
+Notes are projected into project directories as symlinks inside a subdirectory.
+Two separate config settings govern the directory names involved:
 
-To avoid ambiguity, this spec distinguishes:
-- **Collection notes directory**: `<collection_root>/mdmd_notes/` (physical files)
-- **Working symlink directory**: `<cwd>/mdmd_notes/` (symlinks)
+- `symlink-dir` (default: `mdmd_notes/`): name of the symlink directory created
+  inside each project directory (e.g., `<cwd>/mdmd_notes/`).
+- `collection-notes-path` (default: `mdmd_notes/`): subdirectory within the
+  collection root where `ingest` places newly ingested files
+  (e.g., `<collection_root>/mdmd_notes/`). Does not affect `link`, which targets
+  notes wherever they live in the collection.
+
+Both default to `mdmd_notes/` but are configured independently.
 
 Symlinks are named after the collection file's basename. In case of collisions
-(two notes with the same filename both matching the same path), disambiguate
+(two notes with the same filename both associated with the same cwd), disambiguate
 by appending the parent folder name, e.g. `note__subfolder.md`.
-If that still generates a collision error out.
+If that still generates a collision, error out.
+
+## Note Lifecycle
+
+The following walkthrough illustrates the full lifecycle:
+
+```bash
+# Start with a local file — move it into the collection and link it here
+mdmd ingest ./ideas.md
+# ideas.md moved to <collection>/mdmd_notes/ideas.md
+# frontmatter: mdmd_id assigned, paths=[/current/project], created_at set
+# symlink created: mdmd_notes/ideas.md -> <collection>/mdmd_notes/ideas.md
+
+# Adopt an existing note already in the Obsidian vault
+mdmd link Projects/architecture.md
+# frontmatter: mdmd_id assigned (if absent), /current/project appended to paths
+# symlink created: mdmd_notes/architecture.md -> <collection>/Projects/architecture.md
+
+# Share that note with another project
+cd /other-project
+mdmd link Projects/architecture.md
+# frontmatter: /other-project appended to paths
+# symlink created: mdmd_notes/architecture.md -> <collection>/Projects/architecture.md
+
+# List notes linked to the current project
+mdmd list
+# architecture.md  (also linked from: /current/project)
+# (ideas.md is not listed here — it belongs to /current/project, not /other-project)
+
+# Done with it in this project — detach without deleting
+mdmd unlink mdmd_notes/architecture.md
+# /other-project removed from paths in frontmatter and index
+# symlink mdmd_notes/architecture.md removed
+# note remains in collection, still linked from /current/project
+
+# Permanently delete a note from the collection
+cd /current/project
+mdmd remove mdmd_notes/architecture.md
+# Safety check: passes (paths contains only /current/project now)
+# physical file deleted from collection
+# index row deleted, symlink removed
+
+# remove refuses if note is still linked elsewhere
+mdmd remove mdmd_notes/ideas.md   # (hypothetically still linked from /other-project too)
+# Error: note is also linked from /other-project. Use --force to delete anyway.
+```
 
 ## Commands
 
 ### `mdmd ingest <file> [file...]`
 
-Takes one or more existing markdown files, prepares them for the collection, and
-symlinks them back.
+Takes one or more local files, moves them into the collection, and links them to
+the current directory. It is a thin wrapper: move the file, then apply `link`
+semantics.
 
 For each input file (processed in argument order):
-1. Parse existing frontmatter (if any) and preserve it.
-2. Set/overwrite `mdmd` managed properties:
-   - `mdmd_id`: generate UUID v4 (unless already present).
-   - `path`: set to `<cwd>` (absolute path to current directory).
+1. Parse existing frontmatter (if any) and preserve non-mdmd properties.
+2. Determine destination in collection: `<collection_root>/<collection-notes-path>/<filename>`.
+   - If a file with the same name already exists there, append a short suffix
+     (e.g., `ideas_2.md`) to avoid collisions.
+3. Set/overwrite `mdmd` managed properties:
+   - `mdmd_id`: generate UUID v4 (unless already present and valid).
+   - `paths`: initialize to `[<cwd>]` (or append cwd if already has other paths).
    - `created_at`: set to current timestamp (if not already present).
-   - `git_sha`: set to HEAD SHA if cwd is a git repo, omit otherwise.
-3. Move the file into the collection notes directory:
-   `<collection_root>/mdmd_notes/`.
-   - If a file with the same name already exists in `<collection_root>/mdmd_notes/`, append a short
-     suffix (e.g., `note_2.md`) to avoid collisions.
-4. Upsert the note into the SQLite index (so it's immediately available to
-   `sync` without requiring a full `refresh_index`).
-5. Create working symlink directory `mdmd_notes/` in the cwd if it does not exist.
-6. Create a symlink from `<cwd>/mdmd_notes/<filename>` to the collection file.
-7. If cwd is a git repo, ensure `mdmd_notes/` is in `.git/info/exclude`.
+4. Write updated frontmatter back to the file, then move the file to the collection
+   destination.
+5. Upsert the note into the SQLite index.
+6. Create the symlink directory in cwd if it does not exist.
+7. Create a symlink from `<cwd>/<symlink-dir>/<filename>` to the collection file.
+8. If cwd is a git repo, ensure `<symlink-dir>/` is in `.git/info/exclude`.
 
 When multiple files are provided, ingest stops at the first error. Files already
 ingested earlier in that invocation remain ingested.
 
 **Error cases:**
-- File to be ingested does not exist: error.
-- File is already in the collection (detected by path prefix): error, suggest using
-  `sync` instead.
-- File already has a `mdmd_id` that exists in the index: error, the note is
-  already managed. Suggest `sync`.
+- File does not exist: error.
+- File is already in the collection (path prefix match): error, suggest `link`.
+- File already has a `mdmd_id` in the index: error, already managed. Suggest `link`
+  or `sync`.
+
+### `mdmd link <collection-relative-path>`
+
+Associates an existing collection note with the current directory. Works for notes
+already managed by mdmd as well as unmanaged notes (adopts them).
+
+Steps:
+1. Resolve the path relative to the collection root. Error if the file does not exist.
+2. Read existing frontmatter.
+3. If `mdmd_id` is absent, assign a new UUID v4.
+4. If `cwd` is not already in `paths`, append it.
+5. Set `created_at` if not present.
+6. Write updated frontmatter back to the file.
+7. Upsert the note into the SQLite index.
+8. Create the symlink directory in cwd if it does not exist.
+9. Create a symlink from `<cwd>/<symlink-dir>/<basename>` to the collection file.
+   (Handle name collisions as described in Symlink Directory section.)
+10. If cwd is a git repo, ensure `<symlink-dir>/` is in `.git/info/exclude`.
+
+**`link` is idempotent**: if cwd is already in `paths` and the symlink exists,
+it exits cleanly (equivalent to `sync` for that one note).
+
+**Error cases:**
+- Collection file not found: error.
+- Symlink name collision that cannot be resolved: error.
+
+### `mdmd unlink <symlink>...`
+
+Detaches a note from the current directory without deleting it from the collection.
+The note remains in the collection and stays linked to any other directories.
+
+Steps (per symlink):
+1. Verify the symlink exists in `<cwd>/<symlink-dir>/`.
+2. Resolve the symlink to get the physical collection path.
+3. Verify the target exists and is within the collection.
+4. Read frontmatter; verify note is managed (has `mdmd_id`).
+5. Remove cwd from `paths`. Write updated frontmatter back to file.
+6. Update the SQLite index.
+7. Remove the symlink.
+
+**Flags:**
+- `-i, --interactive`: Prompt for confirmation before each unlink.
+
+**Error cases:**
+- Symlink does not exist: error.
+- Target is outside the collection: error.
+- Note is not managed (no `mdmd_id`): error (nothing to unlink from).
+- cwd is not in note's `paths`: warning, still removes the symlink (drift recovery).
+
+### `mdmd list`
+
+Lists notes associated with the current directory, or all notes in the collection.
+
+**Flags:**
+- `--collection`: List all managed notes in the collection, not just those for cwd.
+- `--json`: Emit machine-readable JSON.
+- `--all-fields`: Include full frontmatter in output.
+
+**Default output** (notes for cwd):
+```
+architecture.md   (also linked from: /other-project)
+ideas.md
+meeting-notes.md  (also linked from: /team-project, /archive)
+```
+
+**JSON output** per note includes: `path_in_collection`, `mdmd_id`, `paths`,
+`created_at`, and any other frontmatter properties.
 
 ### Internal: `refresh_index`
 
@@ -142,16 +268,20 @@ built-in JSON functions are used for all queries:
   SELECT * FROM index_notes WHERE json_extract(frontmatter, '$.status') = 'draft';
   ```
 
-- **String matching for path** (since `path` is now a scalar string):
+- **Searching within `paths` array** (used by `sync` and `list`):
   ```sql
-  -- Find all notes associated with a directory (used by sync)
+  -- Find all managed notes associated with a directory
   SELECT n.* FROM index_notes n
   INNER JOIN collections c ON c.collection_id = n.collection_id
   WHERE c.root = '/path/to/collection'
-    AND json_extract(n.frontmatter, '$.path') = '/home/grota/Projects/personal/obn';
+    AND n.mdmd_id IS NOT NULL
+    AND EXISTS (
+      SELECT 1 FROM json_each(json_extract(n.frontmatter, '$.paths'))
+      WHERE value = '/home/grota/Projects/personal/my-project'
+    );
   ```
 
-- **List/array properties** (list, tags): use `json_each()` to search within arrays:
+- **Other list/array properties** (tags, etc.): use `json_each()` similarly:
   ```sql
   -- Find all notes with a specific tag
   SELECT * FROM index_notes
@@ -217,20 +347,19 @@ primary reference. Other markdown editors may use similar conventions.
 
 ### `mdmd sync`
 
-Ensures `mdmd_notes/` in cwd is an exact mirror of all managed collection notes
-whose `path` property equals the current directory.
+Ensures `<cwd>/<symlink-dir>/` is an exact mirror of all managed collection notes
+whose `paths` array contains the current directory.
 
 Steps:
 1. Run `refresh_index` (always, since it's fast with mtime optimization).
-2. Query the index for all notes where `mdmd_id` is present and `path` equals cwd
-   (exact match).
+2. Query the index for all notes where `mdmd_id` is present and `paths` contains cwd.
 3. Determine desired symlink state: set of `(symlink_name, path_in_collection)` pairs.
-4. Create `mdmd_notes/` directory if it does not exist.
-5. Scan existing `mdmd_notes/` directory.
+4. Create symlink directory if it does not exist.
+5. Scan existing symlink directory.
 6. Remove symlinks that don't correspond to a matched note.
 7. Create symlinks for matched notes that aren't already linked.
 8. Fix symlinks that point to stale paths (e.g., note was moved in collection).
-9. If cwd is a git repo, ensure `mdmd_notes/` is in `.git/info/exclude`.
+9. If cwd is a git repo, ensure symlink dir is in `.git/info/exclude`.
 
 **Sync is idempotent.** Running it twice produces the same result.
 
@@ -238,77 +367,64 @@ Manually deleted symlinks are recreated. The collection is the source of truth.
 
 ### `mdmd remove <symlink>...`
 
-Removes one or more notes from the collection by specifying their symlinks in the
-current directory.
+Permanently deletes one or more notes from the collection by specifying their
+symlinks in the current directory.
 
 **Arguments:**
-- `<symlink>...`: One or more paths to symlinks in `mdmd_notes/` directory
+- `<symlink>...`: One or more symlink paths inside the symlink directory
   (e.g., `mdmd_notes/foo.md mdmd_notes/bar.md`)
 
-**Steps (per symlink):**
-1. Verify symlink exists in `mdmd_notes/` within cwd.
-2. Resolve symlink to get physical path in collection.
-3. Verify target file exists and is within the collection (safety check).
-4. Read target file's frontmatter and extract `path` property.
-5. Verify `path` equals current working directory (safety check - error if mismatch).
-6. **[If `--dry-run`]** Print what would be deleted and skip to next symlink.
-7. Delete the physical file from collection.
-8. Remove entry from SQLite index immediately:
-   ```sql
-   DELETE FROM index_notes
-   WHERE collection_id = ?
-     AND path_in_collection = ?
-   ```
-9. Remove the symlink from `mdmd_notes/`.
+**Steps (per symlink, all safety checks run before any deletions):**
+1. Verify symlink exists.
+2. Resolve symlink to get physical collection path.
+3. Verify target file exists and is within the collection.
+4. Read frontmatter; extract `paths`.
+5. If `paths` contains entries **other than cwd**, abort with a warning listing
+   the other directories. Require `--force` to override.
+6. **[If `--dry-run`]** Print what would be deleted and stop.
+7. Delete the physical file from the collection.
+8. Remove the index entry.
+9. Remove the symlink.
 
 **Flags:**
-- `--dry-run`: Show what would be deleted without actually deleting
-- `-i, --interactive`: Prompt for confirmation before each deletion
+- `--dry-run`: Show what would be deleted without actually deleting.
+- `-i, --interactive`: Prompt for confirmation before each deletion.
+- `--force`: Delete even if the note is still linked from other directories.
 
 **Error cases:**
-- Symlink does not exist: error and abort
-- Symlink target not found: error and abort
-- Target is outside collection: error and abort
-- Frontmatter `path` doesn't match cwd: error with message "metadata mismatch: 
-  note claims to belong to {note.path} but symlink is in {cwd}" and abort
-- Note has no `path` property in frontmatter: error and abort
-- Note is not managed (no `mdmd_id`): warning, but continue with deletion
+- Symlink does not exist: error and abort.
+- Symlink target not found: error and abort.
+- Target is outside collection: error and abort.
+- Note still linked from other directories (without `--force`): error and abort.
+- Note is not managed (no `mdmd_id`): warning, still proceed with deletion.
 
 **Behavior:**
-- No confirmation prompt by default - deletion is immediate unless `-i` is passed
-- Supports batch operations: multiple symlinks can be removed in one command
-- All safety checks must pass for ALL symlinks before ANY deletions occur
-- If any symlink fails safety checks, the entire operation aborts with no changes
+- All safety checks must pass for ALL symlinks before ANY deletions occur.
+- No confirmation prompt by default unless `-i`.
 
 **Example:**
 ```bash
-cd /home/user/my-project
-ls mdmd_notes/
-# architecture-notes.md -> /collection/mdmd_notes/architecture-notes.md
-# meeting-notes.md -> /collection/mdmd_notes/meeting-notes.md
+# Remove a note only linked here — succeeds immediately
+mdmd remove mdmd_notes/ideas.md
+# ✓ Deleted: <collection>/mdmd_notes/ideas.md
 
-# Remove single note
-mdmd remove mdmd_notes/architecture-notes.md
-# ✓ Deleted: /collection/mdmd_notes/architecture-notes.md
-# ✓ Removed from index
-# ✓ Removed symlink
+# Remove a note also linked elsewhere — blocked
+mdmd remove mdmd_notes/architecture.md
+# Error: architecture.md is also linked from: /other-project
+# Use --force to delete anyway.
 
-# Remove multiple notes
-mdmd remove mdmd_notes/*.md
-# ✓ Deleted: /collection/mdmd_notes/architecture-notes.md
-# ✓ Deleted: /collection/mdmd_notes/meeting-notes.md
-# (2 notes removed)
+# Force delete
+mdmd remove --force mdmd_notes/architecture.md
+# ✓ Deleted: <collection>/Projects/architecture.md
 
 # Dry run
-mdmd remove --dry-run mdmd_notes/architecture-notes.md
-# Would delete: /collection/mdmd_notes/architecture-notes.md
-# Would remove from index: path_in_collection='mdmd_notes/architecture-notes.md'
-# Would remove symlink: mdmd_notes/architecture-notes.md
+mdmd remove --dry-run mdmd_notes/ideas.md
+# Would delete: <collection>/mdmd_notes/ideas.md
 
-# Interactive mode
-mdmd remove -i mdmd_notes/architecture-notes.md
-# Delete /collection/mdmd_notes/architecture-notes.md? [y/N]: y
-# ✓ Deleted: /collection/mdmd_notes/architecture-notes.md
+# Interactive
+mdmd remove -i mdmd_notes/ideas.md
+# Delete <collection>/mdmd_notes/ideas.md? [y/N]: y
+# ✓ Deleted
 ```
 
 ### `mdmd doctor`
@@ -328,21 +444,24 @@ By default, `doctor` is **read-only** and reports problems without changing file
   - Stale index rows whose `path_in_collection` no longer exists in collection
   - Missing index rows for markdown files present in collection
   - Duplicate `mdmd_id` values (if present)
-  - Invalid managed metadata in frontmatter (`mdmd_id`, `path`, `created_at`)
+  - Invalid managed metadata in frontmatter (`mdmd_id`, `paths`, `created_at`)
+  - Stale `paths` entries pointing to directories that no longer exist on disk
+    (warning: the directory may be temporarily unmounted, not necessarily an error)
 - **Symlinks scope**
-  - Missing expected symlinks in `<cwd>/mdmd_notes/`
+  - Missing expected symlinks in `<cwd>/<symlink-dir>/`
   - Orphan symlinks not represented by current managed-note selection
   - Broken symlinks and stale/wrong symlink targets
-  - Non-symlink filesystem entries inside `<cwd>/mdmd_notes/`
+  - Non-symlink filesystem entries inside `<cwd>/<symlink-dir>/`
 - **Config scope**
   - Collection root existence/accessibility
-  - Presence of `mdmd_notes/` in `.git/info/exclude` when cwd is a git repo
+  - Presence of symlink dir in `.git/info/exclude` when cwd is a git repo
 
 **Fix behavior (`--fix`):**
 - Allowed automatic fixes:
   1. Run internal `refresh_index`
   2. Reconcile symlinks using `sync` semantics
-  3. Ensure `mdmd_notes/` entry exists in `.git/info/exclude`
+  3. Ensure symlink dir entry exists in `.git/info/exclude`
+  4. Remove stale `paths` entries for directories confirmed not to exist
 - `doctor --fix` never deletes collection notes automatically.
 
 **Output contract:**
@@ -366,41 +485,46 @@ Manages mdmd configuration values.
 `config` uses topic-style subcommands (`mdmd config <subcommand>`) with oclif's
 space topic separator.
 
+**Config keys:**
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `collection` | (none) | Absolute path to the collection root |
+| `collection-notes-path` | `mdmd_notes` | Subdirectory within the collection where `ingest` places new files |
+| `symlink-dir` | `mdmd_notes` | Name of the symlink directory created inside each project directory |
+
 **Subcommands:**
 - `mdmd config` (prints available config subcommands)
 - `mdmd config list [--resolved] [--json]`
-- `mdmd config get collection [--resolved] [--json]`
-- `mdmd config set collection <path>`
-- `mdmd config unset collection`
+- `mdmd config get <key> [--resolved] [--json]`
+- `mdmd config set <key> <value>`
+- `mdmd config unset <key>`
 
 **Behavior:**
-- `set` writes `collection` in mdmd YAML config.
-- `unset` removes `collection` (and legacy `collectionPath` if present).
-- `--resolved` returns effective value after full resolution chain (including
-  Obsidian fallback).
+- `--resolved` on `get collection` returns the effective value after full
+  resolution (including Obsidian fallback).
 - `--json` returns machine-readable output suitable for scripts.
 
 ## Implementation Order
 
 Implement commands in this order to minimize cross-command rework:
-1. `ingest`
-2. internal `refresh_index`
-3. `sync`
-4. `remove`
-5. `doctor`
-6. `config`
+1. internal `refresh_index`
+2. `link`
+3. `ingest` (wraps `link`)
+4. `unlink`
+5. `sync`
+6. `list`
+7. `remove`
+8. `doctor`
+9. `config` (new keys)
 
 ## Future Considerations
 
-- Additional config keys beyond collection path (symlink dir, doctor defaults, output format).
-- Configurable target directory (instead of always using cwd).
-- Configurable symlink directory name (default: `mdmd_notes/`).
-- Additional CRUD operations on notes (create new note, read/query, update frontmatter).
-- Search and filter by frontmatter properties (tags, dates, etc.).
+- `mdmd move <symlink> --to <other-dir>`: reassign a note's path association
+  (equivalent to `unlink` + `link` in the target directory).
+- Search and filter by frontmatter properties (tags, dates, etc.) via `mdmd list`.
 - Faceted narrowing.
 - TUI for interactive browsing/filtering (using opentui).
-- `mdmd unlink` command: Remove symlink from current directory and update note's
-  `path` to disassociate it from this directory (without deleting the note).
 
 ## Open Questions
 
@@ -413,14 +537,25 @@ None at this time.
   note-taking application.
 - **Primary target**: Obsidian vaults, with architecture supporting other
   markdown collections in the future.
-- **Path property**: Scalar string (`path: string`) instead of array. Each note
-  is associated with exactly one directory. This simplifies the model and makes
-  queries more efficient.
+- **`paths` property**: Array of strings (`paths: string[]`). A note can be
+  associated with zero, one, or many project directories. This is the central
+  design choice enabling `link`/`unlink` and safe multi-project sharing.
+  Replaced the prior scalar `path: string` design.
+- **`git_sha` dropped**: With `paths` being an array, there is no single git
+  repository to associate a SHA with. The property was low-value and is removed.
+  Users who need it can add it manually.
+- **`link` and `unlink` are atoms**: `ingest` = move + link. `remove` = unlink-all
+  + delete. `sync` = reconcile reality to match what `paths` says. All commands
+  compose from these two primitives.
+- **`remove` multi-path safety**: If a note's `paths` contains entries beyond the
+  current cwd, `remove` aborts unless `--force` is passed. This prevents accidental
+  deletion of notes still in use elsewhere.
 - **Path representation**: absolute paths. Known limitation: associations break
-  if the project directory is moved/renamed.
+  if the project directory is moved/renamed. `doctor` can detect and optionally
+  clean stale path entries.
 - **Collection path configuration priority**: CLI flag > env var > mdmd config >
   Obsidian active-vault fallback.
-- **Frontmatter on ingest**: if the file has no frontmatter, create it from
+- **Frontmatter on ingest/link**: if the file has no frontmatter, create it from
   scratch with all required mdmd properties.
 - **Index scope**: all collection markdown files are indexed, not just managed ones.
   This enables future collection-wide search/filtering.
@@ -428,9 +563,12 @@ None at this time.
 - **Index table name**: `index_notes` (clarifies it's an index, not the source data).
 - **Primary key**: `(collection_id, path_in_collection)` serves as the primary key.
   When files are moved within the collection, the old row is deleted and a new row
-  is inserted for that collection. Note identity is preserved via `mdmd_id`
-  in frontmatter.
-- **Symlink directory**: `mdmd_notes/` (visible, not dot-prefixed). Configurable.
+  is inserted. Note identity is preserved via `mdmd_id` in frontmatter.
+- **Symlink directory**: `mdmd_notes/` by default (visible, not dot-prefixed).
+  Configurable via `symlink-dir` config key.
+- **Collection notes directory**: `mdmd_notes/` by default within the collection
+  root. Configurable via `collection-notes-path` config key. These two settings are
+  independent; they happen to share the same default.
 - **Index format**: SQLite. Frontmatter stored as JSON column, queried via
   SQLite's native `json_extract()` and `json_each()`. No denormalized tables
   upfront; indexed generated columns can be added later if needed.
