@@ -29,13 +29,21 @@ function preprocessForMarkdown(raw: string): string {
 
 type NotePreviewProps = {
   content: string
+  focused: boolean
 }
 
-export function NotePreview({content}: NotePreviewProps) {
+export function NotePreview({content, focused}: NotePreviewProps) {
   const syntaxStyle = useMemo(() => SyntaxStyle.fromTheme(TOKYO_NIGHT_THEME), [])
   const processed = useMemo(() => preprocessForMarkdown(content || ' '), [content])
+  const bgColor = focused ? '#1e2030' : undefined
+  const scrollStyle = useMemo(() => ({
+    contentOptions: {backgroundColor: bgColor},
+    rootOptions: {backgroundColor: bgColor},
+    viewportOptions: {backgroundColor: bgColor},
+    wrapperOptions: {backgroundColor: bgColor},
+  }), [bgColor])
   return (
-    <scrollbox border borderStyle="single" flexGrow={1}>
+    <scrollbox flexGrow={1} focused={focused} paddingLeft={1} style={scrollStyle}>
       <markdown content={processed} syntaxStyle={syntaxStyle} />
     </scrollbox>
   )

@@ -207,11 +207,26 @@ export function App({collectionRoot, cwd, mdmdConfig}: AppProps) {
     }
 
     if (mode === 'filter') {
-      if (key.name === 'enter' || key.name === 'tab') {
-        dispatch({mode: 'normal', type: 'SET_MODE'})
-      } else if (key.name === 'escape') {
-        dispatch({filter: '', type: 'SET_FILTER'})
-        dispatch({mode: 'normal', type: 'SET_MODE'})
+      switch (key.name) {
+        case 'enter': {
+          dispatch({mode: 'normal', type: 'SET_MODE'})
+          break
+        }
+
+        case 'escape': {
+          dispatch({filter: '', type: 'SET_FILTER'})
+          dispatch({mode: 'normal', type: 'SET_MODE'})
+          break
+        }
+
+        case 'tab': {
+          dispatch({type: 'CYCLE_FOCUS'})
+          break
+        }
+
+        default: {
+          break
+        }
       }
 
       return
@@ -314,7 +329,12 @@ export function App({collectionRoot, cwd, mdmdConfig}: AppProps) {
       }
 
       case 'm': {
-        dispatch({type: 'TOGGLE_MANAGED_FILTER'})
+        if (key.shift) {
+          dispatch({type: 'TOGGLE_SCOPE'})
+        } else {
+          dispatch({type: 'TOGGLE_MANAGED_FILTER'})
+        }
+
         break
       }
 
@@ -362,7 +382,7 @@ export function App({collectionRoot, cwd, mdmdConfig}: AppProps) {
       }
 
       case 'tab': {
-        dispatch({type: 'TOGGLE_SCOPE'})
+        dispatch({type: 'CYCLE_FOCUS'})
         break
       }
 
@@ -445,7 +465,7 @@ export function App({collectionRoot, cwd, mdmdConfig}: AppProps) {
           collectionRoot={collectionRoot}
           cursorIndex={clampedCursor}
           cwd={cwd}
-          focused={state.mode !== 'filter' && state.mode !== 'help'}
+          focused={state.focusTarget === 'list' && state.mode !== 'help'}
           managedFilter={state.managedFilter}
           notes={filteredNotes}
           onCursorChange={(index) => dispatch({index, type: 'SET_CURSOR'})}
@@ -457,7 +477,7 @@ export function App({collectionRoot, cwd, mdmdConfig}: AppProps) {
           scope={state.scope}
           selected={state.selected}
         />
-        <NotePreview content={state.previewContent} />
+        <NotePreview content={state.previewContent} focused={state.focusTarget === 'preview' && state.mode !== 'help'} />
       </box>
       <HintBar mode={state.mode} statusMessage={state.statusMessage} />
       {state.mode === 'help' && <HelpOverlay />}

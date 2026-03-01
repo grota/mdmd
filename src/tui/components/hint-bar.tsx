@@ -7,9 +7,9 @@ type HintBarProps = {
 
 const HINTS: Record<Mode, string> = {
   batch: 'j/k:move  Space:toggle  *:all  L:link-all  X:remove-all  Esc:clear  ?:help  q:quit',
-  filter: 'Type to filter  Enter/Tab:back  Esc:clear+back',
+  filter: 'Type to filter  Enter:back  Tab:next-panel  Esc:clear+back',
   help: 'Esc/?/q:close',
-  normal: 'j/k:move  Tab:scope  m:managed  Enter:preview  o:edit  l:link  x:remove  y:yank  s:sort  Space:select  ?:help  q:quit',
+  normal: 'j/k:move  Tab:focus  M:scope  m:managed  Enter:preview  o:edit  l:link  x:remove  y:yank  s:sort  Space:select  ?:help  q:quit',
 }
 
 export function HintBar({mode, statusMessage}: HintBarProps) {

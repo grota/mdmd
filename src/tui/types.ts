@@ -3,6 +3,7 @@ export type SortField = 'created_at' | 'path' | 'paths_count'
 export type SortDir = 'asc' | 'desc'
 export type Scope = 'collection' | 'cwd'
 export type ManagedFilter = 'all' | 'managed'
+export type FocusTarget = 'filter' | 'list' | 'preview'
 
 export type NoteRow = {
   absolutePath: string
@@ -16,6 +17,7 @@ export type NoteRow = {
 export type State = {
   cursorIndex: number
   filter: string
+  focusTarget: FocusTarget
   managedFilter: ManagedFilter
   mode: Mode
   notes: NoteRow[]
@@ -37,6 +39,7 @@ export type Action =
   | {mode: Mode; type: 'SET_MODE';}
   | {notes: NoteRow[]; type: 'SET_NOTES';}
   | {type: 'CLEAR_SELECTION'}
+  | {type: 'CYCLE_FOCUS'}
   | {type: 'CYCLE_SORT_FIELD'}
   | {type: 'TOGGLE_MANAGED_FILTER'}
   | {type: 'TOGGLE_SCOPE'}
@@ -45,6 +48,7 @@ export type Action =
 export const initialState: State = {
   cursorIndex: 0,
   filter: '',
+  focusTarget: 'list',
   managedFilter: 'managed',
   mode: 'normal',
   notes: [],
@@ -69,6 +73,14 @@ export function reducer(state: State, action: Action): State {
       return {...state, mode: 'normal', selected: new Set<string>()}
     }
 
+    case 'CYCLE_FOCUS': {
+      const FOCUS_CYCLE: FocusTarget[] = ['list', 'preview', 'filter']
+      const idx = FOCUS_CYCLE.indexOf(state.focusTarget)
+      const next = FOCUS_CYCLE[(idx + 1) % FOCUS_CYCLE.length] ?? 'list'
+      const nextMode: Mode = next === 'filter' ? 'filter' : 'normal'
+      return {...state, focusTarget: next, mode: nextMode}
+    }
+
     case 'CYCLE_SORT_FIELD': {
       return {...state, cursorIndex: 0, sortField: nextSortField(state.sortField)}
     }
@@ -88,7 +100,12 @@ export function reducer(state: State, action: Action): State {
     }
 
     case 'SET_MODE': {
-      return {...state, mode: action.mode}
+      const nextFocusTarget: FocusTarget =
+        action.mode === 'filter' ? 'filter'
+        : action.mode === 'normal' && state.focusTarget === 'filter' ? 'list'
+        : state.focusTarget
+
+      return {...state, focusTarget: nextFocusTarget, mode: action.mode}
     }
 
     case 'SET_NOTES': {

@@ -18,9 +18,10 @@ export function Header({filter, filteredCount, filterFocused, managedFilter, mod
   const modeLabel = mode === 'normal' ? '' : ` [${mode.toUpperCase()}]`
   const scopeColor = scope === 'collection' ? '#9ece6a' : '#7aa2f7'
   const managedColor = managedFilter === 'all' ? '#e0af68' : '#7dcfff'
+  const bgColor = filterFocused ? '#1e2030' : 'transparent'
 
   return (
-    <box alignItems="center" border borderStyle="single" flexDirection="row" gap={2} height={3} paddingX={1}>
+    <box alignItems="center" backgroundColor={bgColor} border borderStyle="single" flexDirection="row" gap={2} height={3} paddingX={1}>
       <text>
         <span fg="#7aa2f7">
           <strong>mdmd</strong>

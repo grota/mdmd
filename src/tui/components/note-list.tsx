@@ -30,9 +30,11 @@ export function NoteList({collectionRoot, cursorIndex, cwd, focused, managedFilt
     }
   })
 
+  const bgColor = focused ? '#1e2030' : 'transparent'
+
   if (options.length === 0) {
     return (
-      <box alignItems="center" border borderStyle="single" justifyContent="center" title="Notes" width="40%">
+      <box alignItems="center" backgroundColor={bgColor} justifyContent="center" title="Notes" width="40%">
         <text fg="#565f89">No notes found</text>
       </box>
     )
@@ -40,8 +42,9 @@ export function NoteList({collectionRoot, cursorIndex, cwd, focused, managedFilt
 
   return (
     <select
-      backgroundColor="transparent"
+      backgroundColor={bgColor}
       focused={focused}
+      focusedBackgroundColor={bgColor}
       onChange={(index) => onCursorChange(index)}
       onSelect={(index) => onSelect(index)}
       options={options}
